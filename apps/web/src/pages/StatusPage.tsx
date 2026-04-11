@@ -372,9 +372,14 @@ export function StatusPage() {
     staleTime: 60_000,
     refetchInterval: 60_000,
     // Keep a recent injected homepage bootstrap stable through the current monitor window.
-    // Immediate mount refetch can temporarily downgrade recent artifact data to UNKNOWN
-    // before the next scheduled check has refreshed monitor_state/snapshots.
+    // Fallback HTML can be older than the active query freshness window; force a single
+    // mount refresh, then return to the normal anti-downgrade guard.
     refetchOnMount: (query) => {
+      if (globalThis.__UPTIMER_BOOTSTRAP_FALLBACK__) {
+        globalThis.__UPTIMER_BOOTSTRAP_FALLBACK__ = false;
+        return 'always';
+      }
+
       const data = query.state.data as PublicHomepageResponse | undefined;
       if (!data || typeof data.generated_at !== 'number') {
         return true;

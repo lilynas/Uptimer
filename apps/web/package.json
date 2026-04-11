@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/stamp-pages-worker.mjs",
     "preview": "vite preview",
     "lint": "pnpm -w exec eslint --config eslint.config.mjs apps/web",
     "typecheck": "pnpm -w exec tsc -p apps/web/tsconfig.json --noEmit"

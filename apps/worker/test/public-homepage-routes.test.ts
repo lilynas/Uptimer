@@ -445,6 +445,34 @@ describe('public homepage route', () => {
     });
   });
 
+  it('serves a fresh full artifact snapshot when the raw homepage snapshot is missing', async () => {
+    const payload = samplePayload(190);
+    const render = {
+      generated_at: payload.generated_at,
+      preload_html: '<div id="uptimer-preload">hello</div>',
+      snapshot: payload,
+      meta_title: 'Uptimer',
+      meta_description: 'All Systems Operational',
+    };
+    vi.spyOn(Date, 'now').mockReturnValue(200_000);
+
+    const res = await requestHomepage([
+      {
+        match: 'from public_snapshots',
+        first: (args) =>
+          args[0] === 'homepage:artifact'
+            ? {
+                generated_at: payload.generated_at,
+                body_json: JSON.stringify(render),
+              }
+            : null,
+      },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(payload);
+  });
+
   it('returns 503 when no homepage snapshot is available', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(200_000);
 

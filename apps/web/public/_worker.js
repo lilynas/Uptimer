@@ -1,6 +1,14 @@
 const SNAPSHOT_MAX_AGE_SECONDS = 60;
 const PREFERRED_MAX_AGE_SECONDS = 30;
 const FALLBACK_HTML_MAX_AGE_SECONDS = 600;
+const FALLBACK_REUSE_MAX_AGE_SECONDS = 2 * 60;
+const FALLBACK_GENERATED_AT_HEADER = 'x-uptimer-generated-at';
+const FALLBACK_DEPLOY_ID_HEADER = 'x-uptimer-deploy-id';
+const DEPLOY_ID_SENTINEL = '__UPTIMER_DEPLOY_ID__';
+const FALLBACK_DEPLOY_ID = '__UPTIMER_DEPLOY_ID__';
+
+const FALLBACK_BOOTSTRAP_FLAG_TAG =
+  '<script>globalThis.__UPTIMER_BOOTSTRAP_FALLBACK__=true;</script>';
 
 function acceptsHtml(request) {
   const accept = request.headers.get('Accept') || '';
@@ -90,10 +98,70 @@ function computeCacheControl(ageSeconds) {
   return `public, max-age=${maxAge}, stale-while-revalidate=${stale}, stale-if-error=${stale}`;
 }
 
+function readCurrentDeployId() {
+  const override = globalThis.__UPTIMER_DEPLOY_ID__;
+  if (typeof override === 'string' && override.length > 0) {
+    return override;
+  }
+  return FALLBACK_DEPLOY_ID;
+}
+
+function hasCurrentDeployId() {
+  return readCurrentDeployId() !== DEPLOY_ID_SENTINEL;
+}
+
+function isSameDeployFallback(response) {
+  if (!hasCurrentDeployId()) return false;
+  return response.headers.get(FALLBACK_DEPLOY_ID_HEADER) === readCurrentDeployId();
+}
+
+function readFallbackGeneratedAt(response) {
+  const raw = response.headers.get(FALLBACK_GENERATED_AT_HEADER);
+  if (!raw) return null;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isReusableFallback(response, now) {
+  if (!isSameDeployFallback(response)) return false;
+  const generatedAt = readFallbackGeneratedAt(response);
+  if (generatedAt === null) return false;
+  return Math.max(0, now - generatedAt) <= FALLBACK_REUSE_MAX_AGE_SECONDS;
+}
+
+function shouldWarmPrimaryCache(response, now) {
+  const generatedAt = readFallbackGeneratedAt(response);
+  if (generatedAt === null) return false;
+  return Math.max(0, now - generatedAt) < SNAPSHOT_MAX_AGE_SECONDS;
+}
+
+function toClientFallbackResponse(response, now) {
+  const headers = new Headers(response.headers);
+  const generatedAt = readFallbackGeneratedAt(response);
+  headers.delete(FALLBACK_GENERATED_AT_HEADER);
+  headers.delete(FALLBACK_DEPLOY_ID_HEADER);
+
+  if (generatedAt === null) {
+    headers.set('Cache-Control', 'no-store');
+  } else {
+    headers.set('Cache-Control', computeCacheControl(Math.max(0, now - generatedAt)));
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function upsertHeadTag(html, pattern, tag) {
   if (pattern.test(html)) {
     return html.replace(pattern, tag);
   }
+  return html.replace('</head>', `  ${tag}\n</head>`);
+}
+
+function injectHeadTag(html, tag) {
   return html.replace('</head>', `  ${tag}\n</head>`);
 }
 
@@ -227,14 +295,23 @@ export default {
       const cached = await caches.default.match(cacheKey);
       if (cached) return cached;
 
+      const now = Math.floor(Date.now() / 1000);
+      const fallback = await caches.default.match(fallbackCacheKey);
+      if (fallback && isReusableFallback(fallback, now)) {
+        const clientFallback = toClientFallbackResponse(fallback, now);
+        if (shouldWarmPrimaryCache(fallback, now)) {
+          ctx.waitUntil(caches.default.put(cacheKey, clientFallback.clone()));
+        }
+        return clientFallback;
+      }
+
       const base = await fetchIndexHtml(env, url);
       const html = await base.text();
 
       const artifact = await fetchPublicHomepageArtifact(env);
       if (!artifact) {
-        const fallback = await caches.default.match(fallbackCacheKey);
-        if (fallback) {
-          return fallback;
+        if (fallback && isSameDeployFallback(fallback)) {
+          return toClientFallbackResponse(fallback, now);
         }
 
         const headers = new Headers(base.headers);
@@ -245,7 +322,6 @@ export default {
         return new Response(html, { status: 200, headers });
       }
 
-      const now = Math.floor(Date.now() / 1000);
       const generatedAt = typeof artifact.generated_at === 'number' ? artifact.generated_at : now;
       const age = Math.max(0, now - generatedAt);
 
@@ -264,6 +340,8 @@ export default {
       const headers = new Headers(base.headers);
       headers.set('Content-Type', 'text/html; charset=utf-8');
       headers.set('Cache-Control', computeCacheControl(age));
+      headers.set(FALLBACK_GENERATED_AT_HEADER, String(generatedAt));
+      headers.set(FALLBACK_DEPLOY_ID_HEADER, readCurrentDeployId());
       headers.append('Vary', 'Accept');
       headers.delete('Location');
 
@@ -271,7 +349,13 @@ export default {
 
       const fallbackHeaders = new Headers(headers);
       fallbackHeaders.set('Cache-Control', `public, max-age=${FALLBACK_HTML_MAX_AGE_SECONDS}`);
-      const fallbackResp = new Response(injected, { status: 200, headers: fallbackHeaders });
+      const fallbackResp = new Response(
+        injectHeadTag(injected, FALLBACK_BOOTSTRAP_FLAG_TAG),
+        {
+          status: 200,
+          headers: fallbackHeaders,
+        },
+      );
 
       ctx.waitUntil(
         Promise.all([

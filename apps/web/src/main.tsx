@@ -14,6 +14,7 @@ import './styles.css';
 declare global {
   var __UPTIMER_INITIAL_HOMEPAGE__: PublicHomepageResponse | undefined;
   var __UPTIMER_INITIAL_STATUS__: StatusResponse | undefined;
+  var __UPTIMER_BOOTSTRAP_FALLBACK__: boolean | undefined;
 }
 
 const LS_PUBLIC_HOMEPAGE_KEY = 'uptimer_public_homepage_snapshot_v1';
