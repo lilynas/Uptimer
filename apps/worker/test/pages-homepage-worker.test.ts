@@ -74,8 +74,11 @@ describe('pages homepage worker', () => {
 
   it('falls back to the cached injected homepage when snapshot fetch fails', async () => {
     installDefaultCacheMock((request) =>
-      request.url === 'https://status.example.com/__uptimer_homepage_fallback__'
-        ? new Response('<html>fallback homepage</html>', { status: 200 })
+      request.url === 'https://status.example.com/'
+        ? new Response('<html>fallback homepage</html>', {
+            status: 200,
+            headers: { 'X-Uptimer-Generated-At': '0' },
+          })
         : undefined,
     );
     const env = makeEnv();
@@ -94,7 +97,7 @@ describe('pages homepage worker', () => {
     expect(await res.text()).toContain('fallback homepage');
   });
 
-  it('injects the precomputed homepage artifact and updates both html caches on success', async () => {
+  it('injects the precomputed homepage artifact and updates the html cache on success', async () => {
     const { put } = installDefaultCacheMock(() => undefined);
     const env = makeEnv();
     globalThis.fetch = vi.fn(async () =>
@@ -122,6 +125,6 @@ describe('pages homepage worker', () => {
     expect(html).toContain('__UPTIMER_INITIAL_HOMEPAGE__');
     expect(html).not.toContain('__UPTIMER_INITIAL_STATUS__');
     expect(html).toContain('artifact preload');
-    expect(put).toHaveBeenCalledTimes(2);
+    expect(put).toHaveBeenCalledTimes(1);
   });
 });
