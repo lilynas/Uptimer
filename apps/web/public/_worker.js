@@ -229,7 +229,12 @@ export default {
     const isStatusPage = url.pathname === '/' || url.pathname === '/index.html';
     if (wantsHtml && isStatusPage) {
       const cacheKey = new Request(url.origin + '/', { method: 'GET' });
-      const cached = await caches.default.match(cacheKey);
+      let cached = null;
+      try {
+        cached = await caches.default.match(cacheKey);
+      } catch {
+        cached = null;
+      }
       const now = Math.floor(Date.now() / 1000);
       if (cached) {
         const cachedGeneratedAt = readGeneratedAtHeader(cached);
@@ -287,9 +292,15 @@ export default {
       const cacheHeaders = new Headers(headers);
       cacheHeaders.set('Cache-Control', `public, max-age=${FALLBACK_HTML_MAX_AGE_SECONDS}`);
       cacheHeaders.set(HOMEPAGE_CACHE_GENERATED_AT_HEADER, `${generatedAt}`);
+      cacheHeaders.delete('Set-Cookie');
       const cacheResp = new Response(injected, { status: 200, headers: cacheHeaders });
 
-      ctx.waitUntil(caches.default.put(cacheKey, cacheResp));
+      try {
+        ctx.waitUntil(caches.default.put(cacheKey, cacheResp).catch(() => undefined));
+      } catch {
+        // Ignore cache write failures. The injected HTML response is still usable and
+        // the worker should never throw a 1101 just because the cache rejected a put.
+      }
       return resp;
     }
 
