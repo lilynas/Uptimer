@@ -16,26 +16,20 @@ vi.mock('../src/notify/webhook', () => ({
   dispatchWebhookToChannels: vi.fn(),
 }));
 vi.mock('../src/public/homepage', () => ({
-  homepageFromStatusPayload: vi.fn(),
-  readHomepageHistoryPreviews: vi.fn(),
-}));
-vi.mock('../src/public/status', () => ({
-  computePublicStatusPayload: vi.fn(),
+  computePublicHomepagePayload: vi.fn(),
 }));
 vi.mock('../src/snapshots', () => ({
   refreshPublicHomepageSnapshotIfNeeded: vi.fn(),
-  writeStatusSnapshot: vi.fn(),
 }));
 
 import type { Env } from '../src/env';
 import { runHttpCheck } from '../src/monitor/http';
 import { runTcpCheck } from '../src/monitor/tcp';
 import { dispatchWebhookToChannels } from '../src/notify/webhook';
-import { homepageFromStatusPayload, readHomepageHistoryPreviews } from '../src/public/homepage';
-import { computePublicStatusPayload } from '../src/public/status';
+import { computePublicHomepagePayload } from '../src/public/homepage';
 import { runScheduledTick } from '../src/scheduler/scheduled';
 import { acquireLease } from '../src/scheduler/lock';
-import { refreshPublicHomepageSnapshotIfNeeded, writeStatusSnapshot } from '../src/snapshots';
+import { refreshPublicHomepageSnapshotIfNeeded } from '../src/snapshots';
 import { readSettings } from '../src/settings';
 import { createFakeD1Database, type FakeD1QueryHandler } from './helpers/fake-d1';
 
@@ -143,8 +137,10 @@ describe('scheduler/scheduled regression', () => {
       uptime_rating_level: 3,
     });
     vi.mocked(dispatchWebhookToChannels).mockResolvedValue(undefined);
-    vi.mocked(computePublicStatusPayload).mockResolvedValue({
+    vi.mocked(computePublicHomepagePayload).mockResolvedValue({
       generated_at: Math.floor(Date.now() / 1000),
+      bootstrap_mode: 'full',
+      monitor_count_total: 0,
       site_title: 'Uptimer',
       site_description: '',
       site_locale: 'auto',
@@ -161,14 +157,8 @@ describe('scheduler/scheduled regression', () => {
       monitors: [],
       active_incidents: [],
       maintenance_windows: { active: [], upcoming: [] },
-    } as never);
-    vi.mocked(writeStatusSnapshot).mockResolvedValue(undefined);
-    vi.mocked(readHomepageHistoryPreviews).mockResolvedValue({
-      resolvedIncidentPreview: null,
-      maintenanceHistoryPreview: null,
-    });
-    vi.mocked(homepageFromStatusPayload).mockReturnValue({
-      generated_at: Math.floor(Date.now() / 1000),
+      resolved_incident_preview: null,
+      maintenance_history_preview: null,
     } as never);
     vi.mocked(refreshPublicHomepageSnapshotIfNeeded).mockResolvedValue(false);
     vi.mocked(runHttpCheck).mockResolvedValue({
@@ -221,14 +211,7 @@ describe('scheduler/scheduled regression', () => {
     const refreshArgs = vi.mocked(refreshPublicHomepageSnapshotIfNeeded).mock.calls[0]?.[0];
     expect(refreshArgs).toBeDefined();
     await refreshArgs?.compute();
-    expect(computePublicStatusPayload).toHaveBeenCalledWith(env.DB, expectedNow);
-    expect(writeStatusSnapshot).toHaveBeenCalledWith(
-      env.DB,
-      expectedNow,
-      expect.objectContaining({ generated_at: expectedNow }),
-    );
-    expect(readHomepageHistoryPreviews).toHaveBeenCalledWith(env.DB, expectedNow);
-    expect(homepageFromStatusPayload).toHaveBeenCalled();
+    expect(computePublicHomepagePayload).toHaveBeenCalledWith(env.DB, expectedNow);
     expect(waitUntil).toHaveBeenCalledTimes(1);
   });
 
