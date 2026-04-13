@@ -135,11 +135,12 @@ function buildHeartbeatStripSvg(
   const rects: string[] = [];
   for (let index = 0; index < count; index += 1) {
     const x = index * (barWidth + gap);
-    const barHeight =
-      (height * heartbeatHeightPct(strip.status_codes[index], strip.latency_ms[index])) / 100;
+    const barHeight = Math.round(
+      (height * heartbeatHeightPct(strip.status_codes[index], strip.latency_ms[index])) / 100,
+    );
     const y = height - barHeight;
     rects.push(
-      `<rect x="${x}" y="${y.toFixed(2)}" width="${barWidth}" height="${barHeight.toFixed(2)}" rx="1" fill="${heartbeatFillFromCode(strip.status_codes[index])}"/>`,
+      `<rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="1" fill="${heartbeatFillFromCode(strip.status_codes[index])}"/>`,
     );
   }
   return `<svg class="usv" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">${rects.join('')}</svg>`;
