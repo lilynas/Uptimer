@@ -162,6 +162,15 @@ publicRoutes.use(
   cachePublic({
     cacheName: 'uptimer-public',
     maxAgeSeconds: 30,
+    // Cache API lookups can be CPU-expensive on Cloudflare. The homepage
+    // endpoints already have their own caching layers (Pages HTML cache +
+    // public snapshot freshness), so skipping the shared edge cache reduces
+    // median CPU without changing the user-visible payload.
+    skipPathnames: [
+      '/api/v1/public/status',
+      '/api/v1/public/homepage',
+      '/api/v1/public/homepage-artifact',
+    ],
   }),
 );
 
