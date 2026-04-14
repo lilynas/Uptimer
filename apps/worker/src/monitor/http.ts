@@ -24,6 +24,20 @@ const USER_AGENT = 'Uptimer/0.1';
 const RETRY_DELAYS_MS = [300, 800] as const;
 const MAX_ASSERTION_BODY_BYTES = 1024 * 1024; // 1 MiB
 
+type CachedHttpPreparation =
+  | {
+      targetError: string;
+      assertionsResult: { ok: true; assertions: PreparedHttpResponseAssertion[] };
+    }
+  | {
+      targetError: null;
+      assertionsResult:
+        | { ok: true; assertions: PreparedHttpResponseAssertion[] }
+        | { ok: false; error: string };
+    };
+
+const cachedHttpPreparations = new Map<string, CachedHttpPreparation>();
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -122,6 +136,43 @@ function statusOk(httpStatus: number, expectedStatus: number[] | null): boolean 
   return httpStatus >= 200 && httpStatus < 300;
 }
 
+function getCachedHttpPreparation(config: HttpCheckConfig): CachedHttpPreparation {
+  const cacheKey = [
+    config.url,
+    config.responseKeyword ?? '',
+    config.responseKeywordMode ?? '',
+    config.responseForbiddenKeyword ?? '',
+    config.responseForbiddenKeywordMode ?? '',
+  ].join('\u001f');
+  const cached = cachedHttpPreparations.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const targetError = validateHttpTarget(config.url);
+  if (targetError) {
+    const invalidPreparation: CachedHttpPreparation = {
+      targetError,
+      assertionsResult: { ok: true, assertions: [] },
+    };
+    cachedHttpPreparations.set(cacheKey, invalidPreparation);
+    return invalidPreparation;
+  }
+
+  const preparedAssertions = prepareHttpResponseAssertions({
+    responseKeyword: config.responseKeyword,
+    responseKeywordMode: config.responseKeywordMode,
+    responseForbiddenKeyword: config.responseForbiddenKeyword,
+    responseForbiddenKeywordMode: config.responseForbiddenKeywordMode,
+  });
+  const preparation: CachedHttpPreparation = {
+    targetError: null,
+    assertionsResult: preparedAssertions,
+  };
+  cachedHttpPreparations.set(cacheKey, preparation);
+  return preparation;
+}
+
 async function attemptHttpCheck(
   config: HttpCheckConfig,
   assertions: PreparedHttpResponseAssertion[],
@@ -211,17 +262,18 @@ async function attemptHttpCheck(
 }
 
 export async function runHttpCheck(config: HttpCheckConfig): Promise<CheckOutcome> {
-  const targetErr = validateHttpTarget(config.url);
-  if (targetErr) {
-    return { status: 'unknown', latencyMs: null, httpStatus: null, error: targetErr, attempts: 1 };
+  const preparation = getCachedHttpPreparation(config);
+  if (preparation.targetError) {
+    return {
+      status: 'unknown',
+      latencyMs: null,
+      httpStatus: null,
+      error: preparation.targetError,
+      attempts: 1,
+    };
   }
 
-  const preparedAssertions = prepareHttpResponseAssertions({
-    responseKeyword: config.responseKeyword,
-    responseKeywordMode: config.responseKeywordMode,
-    responseForbiddenKeyword: config.responseForbiddenKeyword,
-    responseForbiddenKeywordMode: config.responseForbiddenKeywordMode,
-  });
+  const preparedAssertions = preparation.assertionsResult;
   if (!preparedAssertions.ok) {
     return {
       status: 'unknown',

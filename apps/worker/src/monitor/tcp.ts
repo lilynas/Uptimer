@@ -8,7 +8,13 @@ export type TcpCheckConfig = {
   timeoutMs: number;
 };
 
+type ParsedTcpTarget = { host: string; port: number };
+type CachedTcpPreparation =
+  | { parsed: ParsedTcpTarget; error: null }
+  | { parsed: null; error: string };
+
 const RETRY_DELAYS_MS = [300, 800] as const;
+const cachedTcpPreparations = new Map<string, CachedTcpPreparation>();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -19,12 +25,44 @@ function toErrorMessage(err: unknown): string {
   return String(err);
 }
 
-async function attemptTcpCheck(config: TcpCheckConfig): Promise<Omit<CheckOutcome, 'attempts'>> {
-  const parsed = parseTcpTarget(config.target);
-  if (!parsed) {
-    return { status: 'unknown', latencyMs: null, httpStatus: null, error: 'Invalid target format' };
+function getCachedTcpPreparation(target: string): CachedTcpPreparation {
+  const cached = cachedTcpPreparations.get(target);
+  if (cached) {
+    return cached;
   }
 
+  const parsed = parseTcpTarget(target);
+  if (!parsed) {
+    const invalidPreparation: CachedTcpPreparation = {
+      parsed: null,
+      error: 'target must be in host:port format (IPv6: [addr]:port)',
+    };
+    cachedTcpPreparations.set(target, invalidPreparation);
+    return invalidPreparation;
+  }
+
+  const targetErr = validateTcpTarget(target);
+  if (targetErr) {
+    const invalidPreparation: CachedTcpPreparation = {
+      parsed: null,
+      error: targetErr,
+    };
+    cachedTcpPreparations.set(target, invalidPreparation);
+    return invalidPreparation;
+  }
+
+  const preparation: CachedTcpPreparation = {
+    parsed,
+    error: null,
+  };
+  cachedTcpPreparations.set(target, preparation);
+  return preparation;
+}
+
+async function attemptTcpCheck(
+  parsed: ParsedTcpTarget,
+  timeoutMs: number,
+): Promise<Omit<CheckOutcome, 'attempts'>> {
   const started = performance.now();
   let socket: ReturnType<typeof connect> | null = null;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -34,7 +72,7 @@ async function attemptTcpCheck(config: TcpCheckConfig): Promise<Omit<CheckOutcom
 
     const opened = socket.opened.then(() => 'opened' as const).catch((err) => ({ err }));
     const timedOut = new Promise<'timeout'>((resolve) => {
-      timeoutId = setTimeout(() => resolve('timeout'), config.timeoutMs);
+      timeoutId = setTimeout(() => resolve('timeout'), timeoutMs);
     });
 
     const raced = await Promise.race([opened, timedOut]);
@@ -46,7 +84,7 @@ async function attemptTcpCheck(config: TcpCheckConfig): Promise<Omit<CheckOutcom
         status: 'down',
         latencyMs,
         httpStatus: null,
-        error: `Timeout after ${config.timeoutMs}ms`,
+        error: `Timeout after ${timeoutMs}ms`,
       };
     }
 
@@ -75,16 +113,22 @@ async function attemptTcpCheck(config: TcpCheckConfig): Promise<Omit<CheckOutcom
 }
 
 export async function runTcpCheck(config: TcpCheckConfig): Promise<CheckOutcome> {
-  const targetErr = validateTcpTarget(config.target);
-  if (targetErr) {
-    return { status: 'unknown', latencyMs: null, httpStatus: null, error: targetErr, attempts: 1 };
+  const preparation = getCachedTcpPreparation(config.target);
+  if (preparation.error || !preparation.parsed) {
+    return {
+      status: 'unknown',
+      latencyMs: null,
+      httpStatus: null,
+      error: preparation.error ?? 'Invalid target format',
+      attempts: 1,
+    };
   }
 
   const maxAttempts = 1 + RETRY_DELAYS_MS.length;
   let last: CheckOutcome | null = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const r = await attemptTcpCheck(config);
+    const r = await attemptTcpCheck(preparation.parsed, config.timeoutMs);
     const outcome: CheckOutcome = { ...r, attempts: attempt };
 
     if (outcome.status === 'up') {

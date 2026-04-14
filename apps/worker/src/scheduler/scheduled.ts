@@ -898,7 +898,7 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
       `scheduled: ${rejected.length}/${settled.length} monitors failed at ${checkedAt} attempts=${attemptTotal} http=${httpCount} tcp=${tcpCount} assertions=${assertionCount} down=${downCount} unknown=${unknownCount}`,
       rejected[0],
     );
-  } else {
+  } else if (downCount > 0 || unknownCount > 0) {
     console.log(
       `scheduled: processed ${settled.length} monitors at ${checkedAt} attempts=${attemptTotal} http=${httpCount} tcp=${tcpCount} assertions=${assertionCount} down=${downCount} unknown=${unknownCount}`,
     );
