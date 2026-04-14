@@ -315,17 +315,14 @@ export function buildHomepageRenderArtifact(
   const allMonitorNames = needsMonitorNames
     ? new Map(snapshot.monitors.map((monitor) => [monitor.id, monitor.name]))
     : undefined;
-  const bootstrapSnapshot =
+  const bootstrapSnapshot: PublicHomepageResponse =
     snapshot.bootstrap_mode === 'partial' || snapshot.monitors.length > MAX_BOOTSTRAP_MONITORS
       ? {
           ...snapshot,
           bootstrap_mode: 'partial' as const,
           monitors: snapshot.monitors.slice(0, MAX_BOOTSTRAP_MONITORS),
         }
-      : {
-          ...snapshot,
-          bootstrap_mode: 'full' as const,
-        };
+      : snapshot;
   const metaTitle = normalizeSnapshotText(snapshot.site_title, 'Uptimer');
   const fallbackDescription = normalizeSnapshotText(
     snapshot.banner.title,
@@ -342,6 +339,19 @@ export function buildHomepageRenderArtifact(
     meta_title: metaTitle,
     meta_description: metaDescription,
   };
+}
+
+function buildHomepageRenderArtifactBodyJson(opts: {
+  fullSnapshot: PublicHomepageResponse;
+  render: PublicHomepageRenderArtifact;
+  snapshotBodyJson: string | null;
+}): string {
+  const snapshotJson =
+    opts.snapshotBodyJson && opts.render.snapshot === opts.fullSnapshot
+      ? opts.snapshotBodyJson
+      : JSON.stringify(opts.render.snapshot);
+
+  return `{"generated_at":${opts.render.generated_at},"preload_html":${JSON.stringify(opts.render.preload_html)},"snapshot":${snapshotJson},"meta_title":${JSON.stringify(opts.render.meta_title)},"meta_description":${JSON.stringify(opts.render.meta_description)}}`;
 }
 
 function looksLikeHomepagePayload(value: unknown): value is PublicHomepageResponse {
@@ -747,7 +757,11 @@ export async function writeHomepageSnapshot(
 ): Promise<void> {
   const render = buildHomepageRenderArtifact(payload);
   const dataBodyJson = JSON.stringify(payload);
-  const renderBodyJson = JSON.stringify(render);
+  const renderBodyJson = buildHomepageRenderArtifactBodyJson({
+    fullSnapshot: payload,
+    render,
+    snapshotBodyJson: dataBodyJson,
+  });
 
   await db.batch([
     homepageSnapshotUpsertStatement(db, SNAPSHOT_KEY, payload.generated_at, dataBodyJson, now),
@@ -767,7 +781,11 @@ export async function writeHomepageArtifactSnapshot(
   payload: PublicHomepageResponse,
 ): Promise<void> {
   const render = buildHomepageRenderArtifact(payload);
-  const renderBodyJson = JSON.stringify(render);
+  const renderBodyJson = buildHomepageRenderArtifactBodyJson({
+    fullSnapshot: payload,
+    render,
+    snapshotBodyJson: null,
+  });
 
   await homepageSnapshotUpsertStatement(
     db,
