@@ -6,6 +6,13 @@ import {
   overlapSeconds,
   sumIntervals,
 } from '../analytics/uptime';
+import {
+  materializeMonitorRuntimeTotals,
+  readPublicMonitorRuntimeSnapshot,
+  runtimeEntryToHeartbeats,
+  snapshotHasMonitorIds,
+  toMonitorRuntimeEntryMap,
+} from './monitor-runtime';
 import { readSettings } from '../settings';
 import {
   buildNumberedPlaceholders,
@@ -971,6 +978,11 @@ export async function buildPublicMonitorCards(
 
   const ids = monitorsList.map((m) => m.id);
   if (ids.length > 0) {
+    const runtimeSnapshot = await readPublicMonitorRuntimeSnapshot(db, now);
+    const runtimeById =
+      runtimeSnapshot && snapshotHasMonitorIds(runtimeSnapshot, ids)
+        ? toMonitorRuntimeEntryMap(runtimeSnapshot)
+        : null;
     const placeholders = ids.map((_, idx) => `?${idx + 1}`).join(', ');
     const todayStartAt = utcDayStart(now);
     // Always compute a partial "today" bucket whenever we're inside the current UTC day.
@@ -994,21 +1006,38 @@ export async function buildPublicMonitorCards(
       .then(({ results }) => results ?? []);
 
     const todayByMonitorIdPromise: Promise<Map<number, UptimeWindowTotals>> = needsToday
-      ? computeTodayPartialUptimeBatch(
-          db,
-          rawMonitors.map((monitor) => ({
-            id: monitor.id,
-            interval_sec: monitor.interval_sec,
-            created_at: monitor.created_at,
-            last_checked_at: monitor.last_checked_at,
-          })),
-          Math.max(todayStartAt, rangeStart),
-          rangeEnd,
-        )
+      ? runtimeById
+        ? Promise.resolve(
+            new Map<number, UptimeWindowTotals>(
+              rawMonitors.map((monitor) => [
+                monitor.id,
+                materializeMonitorRuntimeTotals(runtimeById.get(monitor.id)!, rangeEnd),
+              ]),
+            ),
+          )
+        : computeTodayPartialUptimeBatch(
+            db,
+            rawMonitors.map((monitor) => ({
+              id: monitor.id,
+              interval_sec: monitor.interval_sec,
+              created_at: monitor.created_at,
+              last_checked_at: monitor.last_checked_at,
+            })),
+            Math.max(todayStartAt, rangeStart),
+            rangeEnd,
+          )
       : Promise.resolve(new Map<number, UptimeWindowTotals>());
 
     const [heartbeatsByMonitorId, rollupRows, todayByMonitorId] = await Promise.all([
-      listHeartbeatsByMonitorId(db, ids, HEARTBEAT_POINTS),
+      runtimeById
+        ? Promise.resolve(
+            new Map(
+              ids.map((id) => [id, runtimeEntryToHeartbeats(runtimeById.get(id)!)]) as Array<
+                [number, PublicStatusResponse['monitors'][number]['heartbeats']]
+              >,
+            ),
+          )
+        : listHeartbeatsByMonitorId(db, ids, HEARTBEAT_POINTS),
       rollupsPromise,
       todayByMonitorIdPromise,
     ]);

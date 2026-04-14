@@ -15,6 +15,11 @@ import {
   type OutageAction,
 } from '../monitor/state-machine';
 import type { CheckOutcome } from '../monitor/types';
+import { rebuildPublicMonitorRuntimeSnapshot } from '../public/monitor-runtime-bootstrap';
+import {
+  refreshPublicMonitorRuntimeSnapshot,
+  type MonitorRuntimeUpdate,
+} from '../public/monitor-runtime';
 import { readSettings } from '../settings';
 import { acquireLease } from './lock';
 import type { NotifyContext } from './notifications';
@@ -106,6 +111,7 @@ type DueMonitorRow = {
   type: string;
   target: string;
   interval_sec: number;
+  created_at: number;
   timeout_ms: number;
   http_method: string | null;
   http_headers_json: string | null;
@@ -176,6 +182,7 @@ const LIST_DUE_MONITORS_SQL = `
     m.type,
     m.target,
     m.interval_sec,
+    m.created_at,
     m.timeout_ms,
     m.http_method,
     m.http_headers_json,
@@ -423,6 +430,18 @@ function buildOutageStatements(
   return statements;
 }
 
+function toMonitorRuntimeUpdate(completed: CompletedDueMonitor): MonitorRuntimeUpdate {
+  return {
+    monitor_id: completed.row.id,
+    interval_sec: completed.row.interval_sec,
+    created_at: completed.row.created_at,
+    checked_at: completed.checkedAt,
+    check_status: completed.outcome.status,
+    next_status: completed.next.status,
+    latency_ms: completed.outcome.latencyMs,
+  };
+}
+
 async function runDueMonitor(
   row: DueMonitorRow,
   checkedAt: number,
@@ -640,6 +659,12 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
 
   if (completed.length > 0) {
     await persistCompletedMonitors(env.DB, completed);
+    await refreshPublicMonitorRuntimeSnapshot({
+      db: env.DB,
+      now,
+      updates: completed.map(toMonitorRuntimeUpdate),
+      rebuild: async () => await rebuildPublicMonitorRuntimeSnapshot(env.DB, now),
+    });
 
     if (notificationsModule) {
       for (const monitor of completed) {

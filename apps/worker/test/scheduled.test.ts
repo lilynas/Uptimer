@@ -18,6 +18,9 @@ vi.mock('../src/notify/webhook', () => ({
 vi.mock('../src/public/homepage', () => ({
   computePublicHomepagePayload: vi.fn(),
 }));
+vi.mock('../src/public/monitor-runtime', () => ({
+  refreshPublicMonitorRuntimeSnapshot: vi.fn(),
+}));
 vi.mock('../src/snapshots', () => ({
   refreshPublicHomepageSnapshot: vi.fn(),
 }));
@@ -27,6 +30,7 @@ import { runHttpCheck } from '../src/monitor/http';
 import { runTcpCheck } from '../src/monitor/tcp';
 import { dispatchWebhookToChannels } from '../src/notify/webhook';
 import { computePublicHomepagePayload } from '../src/public/homepage';
+import { refreshPublicMonitorRuntimeSnapshot } from '../src/public/monitor-runtime';
 import { runScheduledTick } from '../src/scheduler/scheduled';
 import { acquireLease } from '../src/scheduler/lock';
 import { refreshPublicHomepageSnapshot } from '../src/snapshots';
@@ -61,7 +65,13 @@ function createEnv(options: CreateEnvOptions = {}): Env {
     },
     {
       match: 'from monitors m',
-      all: () => dueRows,
+      all: () =>
+        dueRows.map((row) => {
+          if (typeof row === 'object' && row !== null && !('created_at' in row)) {
+            Object.assign(row as Record<string, unknown>, { created_at: 0 });
+          }
+          return row;
+        }),
     },
     {
       match: 'select distinct mwm.monitor_id',
@@ -160,6 +170,7 @@ describe('scheduler/scheduled regression', () => {
       resolved_incident_preview: null,
       maintenance_history_preview: null,
     } as never);
+    vi.mocked(refreshPublicMonitorRuntimeSnapshot).mockResolvedValue(undefined);
     vi.mocked(refreshPublicHomepageSnapshot).mockResolvedValue(undefined);
     vi.mocked(runHttpCheck).mockResolvedValue({
       status: 'up',

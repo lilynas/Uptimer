@@ -1,6 +1,13 @@
 import type { PublicHomepageResponse } from '../schemas/public-homepage';
 import type { PublicStatusResponse } from '../schemas/public-status';
 import type { Trace } from '../observability/trace';
+import {
+  materializeMonitorRuntimeTotals,
+  readPublicMonitorRuntimeSnapshot,
+  runtimeEntryToHeartbeats,
+  snapshotHasMonitorIds,
+  toMonitorRuntimeEntryMap,
+} from './monitor-runtime';
 
 import {
   buildPublicStatusBanner,
@@ -479,6 +486,15 @@ async function buildHomepageMonitorCardsFromRows(
   // This avoids missing uptime strips / 30d uptime immediately after a fresh deployment.
   const needsToday = rangeEnd > rangeEndFullDays;
   const monitors = rows.map((row) => toHomepageMonitorCard(row, now, maintenanceMonitorIds));
+  const runtimeSnapshot = await withTraceAsync(
+    trace,
+    'homepage_cards_runtime_cache_read',
+    async () => await readPublicMonitorRuntimeSnapshot(db, now),
+  );
+  const runtimeById =
+    runtimeSnapshot && snapshotHasMonitorIds(runtimeSnapshot, selectedIds)
+      ? toMonitorRuntimeEntryMap(runtimeSnapshot)
+      : null;
   const monitorIndexById = new Map<number, number>();
   for (let index = 0; index < monitors.length; index += 1) {
     const monitor = monitors[index];
@@ -486,29 +502,40 @@ async function buildHomepageMonitorCardsFromRows(
     monitorIndexById.set(monitor.id, index);
   }
 
-  const heartbeatRowsPromise = withTraceAsync(
-    trace,
-    'homepage_cards_heartbeat_query',
-    async () => {
-      const statement = db.prepare(
-        `
+  const heartbeatRowsPromise = runtimeById
+    ? Promise.resolve(
+        rows.map((monitor) => ({
+          monitorId: monitor.id,
+          rows: runtimeEntryToHeartbeats(runtimeById.get(monitor.id)!).map((heartbeat) => ({
+            checked_at: heartbeat.checked_at,
+            latency_ms: heartbeat.latency_ms,
+            status: heartbeat.status,
+          })),
+        })),
+      )
+    : withTraceAsync(
+        trace,
+        'homepage_cards_heartbeat_query',
+        async () => {
+          const statement = db.prepare(
+            `
       SELECT checked_at, latency_ms, status
       FROM check_results
       WHERE monitor_id = ?1
       ORDER BY checked_at DESC, id DESC
       LIMIT ?2
     `,
-      );
-      const results = await db.batch<HomepageHeartbeatRow>(
-        rows.map((monitor) => statement.bind(monitor.id, HEARTBEAT_POINTS)),
-      );
+          );
+          const results = await db.batch<HomepageHeartbeatRow>(
+            rows.map((monitor) => statement.bind(monitor.id, HEARTBEAT_POINTS)),
+          );
 
-      return rows.map((monitor, index) => ({
-        monitorId: monitor.id,
-        rows: results[index]?.results ?? [],
-      }));
-    },
-  );
+          return rows.map((monitor, index) => ({
+            monitorId: monitor.id,
+            rows: results[index]?.results ?? [],
+          }));
+        },
+      );
 
   const rollupRowsPromise = withTraceAsync(
     trace,
@@ -547,24 +574,33 @@ async function buildHomepageMonitorCardsFromRows(
         .then((resultRows) => resultRows ?? []),
   );
 
-  const todayByMonitorIdPromise: Promise<Map<number, UptimeWindowTotals>> = needsToday
-    ? withTraceAsync(
-        trace,
-        'homepage_cards_today_query',
-        async () =>
-          await computeTodayPartialUptimeBatch(
-            db,
-            rows.map((monitor) => ({
-              id: monitor.id,
-              interval_sec: monitor.interval_sec,
-              created_at: monitor.created_at,
-              last_checked_at: monitor.last_checked_at,
-            })),
-            Math.max(todayStartAt, rangeStart),
-            rangeEnd,
+  const todayByMonitorIdPromise: Promise<Map<number, UptimeWindowTotals>> = !needsToday
+    ? Promise.resolve(new Map<number, UptimeWindowTotals>())
+    : runtimeById
+      ? Promise.resolve(
+          new Map<number, UptimeWindowTotals>(
+            rows.map((monitor) => [
+              monitor.id,
+              materializeMonitorRuntimeTotals(runtimeById.get(monitor.id)!, rangeEnd),
+            ]),
           ),
-      )
-    : Promise.resolve(new Map<number, UptimeWindowTotals>());
+        )
+      : withTraceAsync(
+          trace,
+          'homepage_cards_today_query',
+          async () =>
+            await computeTodayPartialUptimeBatch(
+              db,
+              rows.map((monitor) => ({
+                id: monitor.id,
+                interval_sec: monitor.interval_sec,
+                created_at: monitor.created_at,
+                last_checked_at: monitor.last_checked_at,
+              })),
+              Math.max(todayStartAt, rangeStart),
+              rangeEnd,
+            ),
+        );
 
   const [heartbeatRows, rollupRows, todayByMonitorId] = await Promise.all([
     heartbeatRowsPromise,
