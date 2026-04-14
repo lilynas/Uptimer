@@ -135,27 +135,6 @@ describe('snapshots/public-homepage', () => {
     });
   });
 
-  it('synthesizes homepage render artifacts from the full homepage snapshot row', async () => {
-    const payload = samplePayload(190);
-    const db = createFakeD1Database([
-      {
-        match: 'from public_snapshots',
-        first: (args) =>
-          args[0] === 'homepage'
-            ? {
-                generated_at: payload.generated_at,
-                body_json: JSON.stringify(payload),
-              }
-            : null,
-      },
-    ]);
-
-    await expect(readHomepageSnapshotArtifact(db, 200)).resolves.toEqual({
-      data: buildHomepageRenderArtifact(payload),
-      age: 10,
-    });
-  });
-
   it('reads legacy homepage payloads but refuses to synthesize render artifacts on the read path', async () => {
     const { bootstrap_mode: _ignoredMode, monitor_count_total: _ignoredCount, ...legacyPayload } =
       samplePayload(190);
@@ -255,7 +234,13 @@ describe('snapshots/public-homepage', () => {
     const payload = samplePayload(280);
     await writeHomepageSnapshot(db, 300, payload);
 
-    expect(boundArgs).toEqual([['homepage', 280, JSON.stringify(payload), 300]]);
+    const storedData = payload;
+    const storedRender = buildHomepageRenderArtifact(payload);
+
+    expect(boundArgs).toEqual([
+      ['homepage', 280, JSON.stringify(storedData), 300],
+      ['homepage:artifact', 280, JSON.stringify(storedRender), 300],
+    ]);
   });
 
   it('writes artifact-only homepage snapshots without touching the full payload row', async () => {
@@ -366,11 +351,15 @@ describe('snapshots/public-homepage', () => {
     const compute = vi.fn(async () => samplePayload(now));
     const refreshed = await refreshPublicHomepageSnapshotIfNeeded({ db, now, compute });
     const storedData = samplePayload(now);
+    const storedRender = buildHomepageRenderArtifact(samplePayload(now));
 
     expect(refreshed).toBe(true);
     expect(acquireLease).toHaveBeenCalledWith(db, 'snapshot:homepage:refresh', now, 55);
     expect(compute).toHaveBeenCalledTimes(1);
-    expect(writtenArgs).toEqual([['homepage', now, JSON.stringify(storedData), now]]);
+    expect(writtenArgs).toEqual([
+      ['homepage', now, JSON.stringify(storedData), now],
+      ['homepage:artifact', now, JSON.stringify(storedRender), now],
+    ]);
   });
 
   it('refreshes only the artifact snapshot when the scheduler path requests it', async () => {

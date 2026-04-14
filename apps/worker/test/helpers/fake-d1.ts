@@ -147,11 +147,36 @@ export function createFakeD1Database(handlers: FakeD1QueryHandler[]): D1Database
     async batch<T = unknown>(statements: D1PreparedStatement[]) {
       const results: D1Result<T>[] = [];
       for (const statement of statements) {
-        const run = (statement as { run?: () => Promise<D1Result<T>> }).run;
-        if (!run) {
-          throw new Error('Fake D1 batch() received a statement without run()');
+        const typed = statement as {
+          run?: () => Promise<D1Result<T>>;
+          all?: () => Promise<{ results: T[] }>;
+        };
+        const run = typed.run;
+        if (run) {
+          try {
+            results.push(await run.call(statement));
+            continue;
+          } catch (err) {
+            if (
+              !(err instanceof Error) ||
+              !err.message.startsWith('No fake D1 run() handler matched SQL:')
+            ) {
+              throw err;
+            }
+          }
         }
-        results.push(await run.call(statement));
+
+        const all = typed.all;
+        if (!all) {
+          throw new Error('Fake D1 batch() received a statement without run()/all()');
+        }
+
+        const outcome = await all.call(statement);
+        results.push({
+          success: true,
+          results: outcome.results ?? [],
+          meta: { changes: 0 },
+        } as unknown as D1Result<T>);
       }
       return results;
     },

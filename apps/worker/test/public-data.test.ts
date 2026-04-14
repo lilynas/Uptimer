@@ -10,7 +10,7 @@ describe('public/data', () => {
 
   it('chunks today partial uptime SQL to stay within the D1 bind limit', async () => {
     const rangeStart = 1_776_172_800;
-    const now = rangeStart + 600;
+    const now = rangeStart + 120_000;
     const monitors = Array.from({ length: 26 }, (_, index) => ({
       id: index + 1,
       interval_sec: 60,
@@ -62,17 +62,17 @@ describe('public/data', () => {
     ]);
     expect(result.size).toBe(26);
     expect(result.get(1)).toMatchObject({
-      total_sec: 600,
+      total_sec: 120_000,
       downtime_sec: 0,
       unknown_sec: 0,
-      uptime_sec: 600,
+      uptime_sec: 120_000,
       uptime_pct: 100,
     });
     expect(result.get(26)).toMatchObject({
-      total_sec: 600,
+      total_sec: 120_000,
       downtime_sec: 0,
       unknown_sec: 0,
-      uptime_sec: 600,
+      uptime_sec: 120_000,
       uptime_pct: 100,
     });
   });

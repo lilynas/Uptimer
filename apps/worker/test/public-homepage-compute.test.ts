@@ -30,14 +30,10 @@ describe('computePublicHomepagePayload', () => {
         all: () => [],
       },
       {
-        match: 'json_group_array(checked_at)',
-        raw: () => [
-          [
-            1,
-            JSON.stringify([now - 60, now - 120]),
-            JSON.stringify([42, null]),
-            'ud',
-          ],
+        match: 'select checked_at, latency_ms, status from check_results',
+        all: () => [
+          { checked_at: now - 60, latency_ms: 42, status: 'up' },
+          { checked_at: now - 120, latency_ms: null, status: 'down' },
         ],
       },
       {
@@ -161,8 +157,8 @@ describe('computePublicHomepagePayload', () => {
         all: () => [],
       },
       {
-        match: 'json_group_array(checked_at)',
-        raw: () => [[1, JSON.stringify([now - 120]), JSON.stringify([42]), 'u']],
+        match: 'select checked_at, latency_ms, status from check_results',
+        all: () => [{ checked_at: now - 120, latency_ms: 42, status: 'up' }],
       },
       {
         match: 'json_group_array(day_start_at)',

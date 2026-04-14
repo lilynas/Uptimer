@@ -12,7 +12,6 @@ import type { Env } from '../src/env';
 import { handleError, handleNotFound } from '../src/middleware/errors';
 import worker from '../src/index';
 import { publicRoutes } from '../src/routes/public';
-import { buildHomepageRenderArtifact } from '../src/snapshots/public-homepage';
 import { createFakeD1Database, type FakeD1QueryHandler } from './helpers/fake-d1';
 
 type CacheStore = Map<string, Response>;
@@ -190,27 +189,6 @@ describe('public homepage route', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(render);
-  });
-
-  it('synthesizes homepage render artifacts from the full homepage snapshot row', async () => {
-    const payload = samplePayload(190);
-    vi.spyOn(Date, 'now').mockReturnValue(200_000);
-
-    const res = await requestHomepageArtifact([
-      {
-        match: 'from public_snapshots',
-        first: (args) =>
-          args[0] === 'homepage'
-            ? {
-                generated_at: payload.generated_at,
-                body_json: JSON.stringify(payload),
-              }
-            : null,
-      },
-    ]);
-
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual(buildHomepageRenderArtifact(payload));
   });
 
   it('falls back to the legacy combined homepage row for artifacts during rollout', async () => {

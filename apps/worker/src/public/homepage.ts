@@ -49,12 +49,11 @@ type HomepageMonitorRow = {
   last_checked_at: number | null;
 };
 
-type HomepageHeartbeatStripAggRawRow = [
-  monitor_id: number,
-  checked_at_json: string | null,
-  latency_ms_json: string | null,
-  status_codes: string | null,
-];
+type HomepageHeartbeatRow = {
+  checked_at: number;
+  latency_ms: number | null;
+  status: string | null;
+};
 
 type HomepageUptimeDayStripAggRawRow = [
   monitor_id: number,
@@ -490,50 +489,25 @@ async function buildHomepageMonitorCardsFromRows(
   const heartbeatRowsPromise = withTraceAsync(
     trace,
     'homepage_cards_heartbeat_query',
-    async () =>
-      await db
-        .prepare(
-          `
-      SELECT
-        monitor_id,
-        json_group_array(checked_at) AS checked_at_json,
-        json_group_array(latency_ms) AS latency_ms_json,
-        group_concat(status_code, '') AS status_codes
-      FROM (
-        SELECT
-          monitor_id,
-          checked_at,
-          latency_ms,
-          CASE status
-            WHEN 'up' THEN 'u'
-            WHEN 'down' THEN 'd'
-            WHEN 'maintenance' THEN 'm'
-            ELSE 'x'
-          END AS status_code
-        FROM (
-          SELECT
-            id,
-            monitor_id,
-            checked_at,
-            status,
-            latency_ms,
-            ROW_NUMBER() OVER (
-              PARTITION BY monitor_id
-              ORDER BY checked_at DESC, id DESC
-            ) AS rn
-          FROM check_results
-          WHERE monitor_id IN (${placeholders})
-        )
-        WHERE rn <= ?${selectedIds.length + 1}
-        ORDER BY monitor_id, checked_at DESC, id DESC
-      )
-      GROUP BY monitor_id
-      ORDER BY monitor_id
+    async () => {
+      const statement = db.prepare(
+        `
+      SELECT checked_at, latency_ms, status
+      FROM check_results
+      WHERE monitor_id = ?1
+      ORDER BY checked_at DESC, id DESC
+      LIMIT ?2
     `,
-        )
-        .bind(...selectedIds, HEARTBEAT_POINTS)
-        .raw<HomepageHeartbeatStripAggRawRow>()
-        .then((resultRows) => resultRows ?? []),
+      );
+      const results = await db.batch<HomepageHeartbeatRow>(
+        rows.map((monitor) => statement.bind(monitor.id, HEARTBEAT_POINTS)),
+      );
+
+      return rows.map((monitor, index) => ({
+        monitorId: monitor.id,
+        rows: results[index]?.results ?? [],
+      }));
+    },
   );
 
   const rollupRowsPromise = withTraceAsync(
@@ -600,15 +574,17 @@ async function buildHomepageMonitorCardsFromRows(
 
   withTraceSync(trace, 'homepage_cards_heartbeat_hydrate', () => {
     for (const row of heartbeatRows) {
-      const index = monitorIndexById.get(row[0]);
+      const index = monitorIndexById.get(row.monitorId);
       if (index === undefined) continue;
 
       const monitor = monitors[index];
       if (!monitor) continue;
 
-      monitor.heartbeat_strip.checked_at = safeParseJsonArray<number>(row[1]);
-      monitor.heartbeat_strip.latency_ms = safeParseJsonArray<number | null>(row[2]);
-      monitor.heartbeat_strip.status_codes = row[3] ?? '';
+      monitor.heartbeat_strip.checked_at = row.rows.map((entry) => entry.checked_at);
+      monitor.heartbeat_strip.latency_ms = row.rows.map((entry) => entry.latency_ms);
+      monitor.heartbeat_strip.status_codes = row.rows
+        .map((entry) => toHeartbeatStatusCode(entry.status))
+        .join('');
     }
   });
 

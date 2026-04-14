@@ -124,6 +124,7 @@ const TODAY_PARTIAL_UPTIME_SQL_CHUNK_SIZE = Math.max(
       TODAY_PARTIAL_UPTIME_BINDINGS_PER_MONITOR,
   ),
 );
+const TODAY_PARTIAL_UPTIME_LEGACY_ROW_THRESHOLD = 50_000;
 
 function appendMapValue<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   const existing = map.get(key);
@@ -412,12 +413,50 @@ export async function computeTodayPartialUptimeBatch(
   rangeStart: number,
   now: number,
 ): Promise<Map<number, UptimeWindowTotals>> {
+  const preferLegacy = shouldPreferLegacyTodayPartialUptime(monitors, rangeStart, now);
+  if (preferLegacy) {
+    try {
+      return await computeTodayPartialUptimeBatchLegacy(db, monitors, rangeStart, now);
+    } catch (err) {
+      console.warn('uptime: today batch legacy failed, falling back to SQL', err);
+      return await computeTodayPartialUptimeBatchSql(db, monitors, rangeStart, now);
+    }
+  }
+
   try {
     return await computeTodayPartialUptimeBatchSql(db, monitors, rangeStart, now);
   } catch (err) {
     console.warn('uptime: today batch SQL failed, falling back to legacy', err);
     return await computeTodayPartialUptimeBatchLegacy(db, monitors, rangeStart, now);
   }
+}
+
+function shouldPreferLegacyTodayPartialUptime(
+  monitors: Array<{
+    id: number;
+    interval_sec: number;
+    created_at: number;
+    last_checked_at: number | null;
+  }>,
+  rangeStart: number,
+  now: number,
+): boolean {
+  let estimatedRows = 0;
+  for (const monitor of monitors) {
+    const intervalSec = Math.max(60, monitor.interval_sec);
+    const monitorStart = Math.max(rangeStart, monitor.created_at);
+    if (now <= monitorStart) {
+      estimatedRows += 1;
+    } else {
+      estimatedRows += Math.ceil((now - monitorStart) / intervalSec) + 2;
+    }
+
+    if (estimatedRows > TODAY_PARTIAL_UPTIME_LEGACY_ROW_THRESHOLD) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 async function computeTodayPartialUptimeBatchSql(

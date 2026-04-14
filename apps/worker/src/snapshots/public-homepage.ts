@@ -41,23 +41,9 @@ export type PublicHomepageRenderArtifact = {
   meta_description: string;
 };
 
-type HomepageArtifactReadResult = {
-  age: number;
-  bodyJson: string;
-  data: PublicHomepageRenderArtifact;
-};
-
-type HomepageArtifactCacheEntry = {
-  generatedAt: number;
-  sourceBodyJson: string;
-  bodyJson: string;
-  data: PublicHomepageRenderArtifact;
-};
-
 const readSnapshotStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 const readSnapshotGeneratedAtStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 const upsertSnapshotStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
-let homepageArtifactCache: HomepageArtifactCacheEntry | null = null;
 
 function withTraceSync<T>(trace: Trace | undefined, name: string, fn: () => T): T {
   return trace ? trace.time(name, fn) : fn();
@@ -448,116 +434,6 @@ function readStoredHomepageSnapshotRender(value: unknown): PublicHomepageRenderA
   return looksLikeHomepageArtifact(value.render) ? value.render : null;
 }
 
-function readRenderableHomepageSnapshotData(value: unknown): PublicHomepageResponse | null {
-  if (looksLikeHomepagePayload(value)) {
-    return value.bootstrap_mode === 'full' ? value : null;
-  }
-
-  if (!isRecord(value)) return null;
-  const version = value.version;
-  if (version !== SPLIT_SNAPSHOT_VERSION && version !== LEGACY_COMBINED_SNAPSHOT_VERSION) {
-    return null;
-  }
-
-  return looksLikeHomepagePayload(value.data) && value.data.bootstrap_mode === 'full'
-    ? value.data
-    : null;
-}
-
-function readCachedHomepageArtifact(
-  row: { generated_at: number; body_json: string },
-): HomepageArtifactReadResult | null {
-  if (
-    homepageArtifactCache?.generatedAt === row.generated_at &&
-    homepageArtifactCache.sourceBodyJson === row.body_json
-  ) {
-    return {
-      age: 0,
-      bodyJson: homepageArtifactCache.bodyJson,
-      data: homepageArtifactCache.data,
-    };
-  }
-
-  return null;
-}
-
-function cacheHomepageArtifact(
-  row: { generated_at: number; body_json: string },
-  data: PublicHomepageRenderArtifact,
-): HomepageArtifactReadResult {
-  const bodyJson = JSON.stringify(data);
-  homepageArtifactCache = {
-    generatedAt: row.generated_at,
-    sourceBodyJson: row.body_json,
-    bodyJson,
-    data,
-  };
-  return {
-    age: 0,
-    bodyJson,
-    data,
-  };
-}
-
-function readHomepageArtifactFromRow(
-  row: { generated_at: number; body_json: string },
-  now: number,
-  maxAgeSeconds: number,
-): HomepageArtifactReadResult | null {
-  const age = Math.max(0, now - row.generated_at);
-  if (age > maxAgeSeconds) return null;
-
-  if (looksLikeSerializedHomepageArtifact(row.body_json)) {
-    const parsed = safeJsonParse(row.body_json);
-    if (parsed === null) return null;
-
-    const render = readStoredHomepageSnapshotRender(parsed);
-    if (!render) {
-      console.warn('homepage snapshot: invalid artifact payload');
-      return null;
-    }
-
-    return {
-      age,
-      bodyJson: row.body_json,
-      data: render,
-    };
-  }
-
-  const parsed = safeJsonParse(row.body_json);
-  if (parsed === null) return null;
-
-  const render = readStoredHomepageSnapshotRender(parsed);
-  if (render) {
-    return {
-      age,
-      bodyJson: JSON.stringify(render),
-      data: render,
-    };
-  }
-
-  const payload = readRenderableHomepageSnapshotData(parsed);
-  if (!payload) {
-    return null;
-  }
-
-  const cached = readCachedHomepageArtifact(row);
-  if (cached) {
-    return {
-      age,
-      bodyJson: cached.bodyJson,
-      data: cached.data,
-    };
-  }
-
-  const synthesized = cacheHomepageArtifact(row, buildHomepageRenderArtifact(payload));
-  return {
-    age,
-    bodyJson: synthesized.bodyJson,
-    data: synthesized.data,
-  };
-}
-
 function safeJsonParse(text: string): unknown | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
@@ -746,29 +622,24 @@ export async function readHomepageSnapshotArtifact(
   db: D1Database,
   now: number,
 ): Promise<{ data: PublicHomepageRenderArtifact; age: number } | null> {
-  const homepageRow = await readHomepageSnapshotRow(db);
-  const homepageArtifact = homepageRow
-    ? readHomepageArtifactFromRow(homepageRow, now, MAX_AGE_SECONDS)
-    : null;
-  if (homepageArtifact) {
-    return {
-      data: homepageArtifact.data,
-      age: homepageArtifact.age,
-    };
-  }
+  const row = (await readHomepageArtifactSnapshotRow(db)) ?? (await readHomepageSnapshotRow(db));
+  if (!row) return null;
 
-  const artifactRow = await readHomepageArtifactSnapshotRow(db);
-  if (!artifactRow) return null;
+  const age = Math.max(0, now - row.generated_at);
+  if (age > MAX_AGE_SECONDS) return null;
 
-  const artifact = readHomepageArtifactFromRow(artifactRow, now, MAX_AGE_SECONDS);
-  if (!artifact) {
+  const parsed = safeJsonParse(row.body_json);
+  if (parsed === null) return null;
+
+  const render = readStoredHomepageSnapshotRender(parsed);
+  if (!render) {
     console.warn('homepage snapshot: invalid render payload');
     return null;
   }
 
   return {
-    data: artifact.data,
-    age: artifact.age,
+    data: render,
+    age,
   };
 }
 
@@ -776,29 +647,31 @@ export async function readHomepageSnapshotArtifactJson(
   db: D1Database,
   now: number,
 ): Promise<{ bodyJson: string; age: number } | null> {
-  const homepageRow = await readHomepageSnapshotRow(db);
-  const homepageArtifact = homepageRow
-    ? readHomepageArtifactFromRow(homepageRow, now, MAX_AGE_SECONDS)
-    : null;
-  if (homepageArtifact) {
+  const row = (await readHomepageArtifactSnapshotRow(db)) ?? (await readHomepageSnapshotRow(db));
+  if (!row) return null;
+
+  const age = Math.max(0, now - row.generated_at);
+  if (age > MAX_AGE_SECONDS) return null;
+
+  if (looksLikeSerializedHomepageArtifact(row.body_json)) {
     return {
-      bodyJson: homepageArtifact.bodyJson,
-      age: homepageArtifact.age,
+      bodyJson: row.body_json,
+      age,
     };
   }
 
-  const artifactRow = await readHomepageArtifactSnapshotRow(db);
-  if (!artifactRow) return null;
+  const parsed = safeJsonParse(row.body_json);
+  if (parsed === null) return null;
 
-  const artifact = readHomepageArtifactFromRow(artifactRow, now, MAX_AGE_SECONDS);
-  if (!artifact) {
+  const render = readStoredHomepageSnapshotRender(parsed);
+  if (!render) {
     console.warn('homepage snapshot: invalid render payload');
     return null;
   }
 
   return {
-    bodyJson: artifact.bodyJson,
-    age: artifact.age,
+    bodyJson: JSON.stringify(render),
+    age,
   };
 }
 
@@ -806,29 +679,24 @@ export async function readStaleHomepageSnapshotArtifact(
   db: D1Database,
   now: number,
 ): Promise<{ data: PublicHomepageRenderArtifact; age: number } | null> {
-  const homepageRow = await readHomepageSnapshotRow(db);
-  const homepageArtifact = homepageRow
-    ? readHomepageArtifactFromRow(homepageRow, now, MAX_STALE_SECONDS)
-    : null;
-  if (homepageArtifact) {
-    return {
-      data: homepageArtifact.data,
-      age: homepageArtifact.age,
-    };
-  }
+  const row = (await readHomepageArtifactSnapshotRow(db)) ?? (await readHomepageSnapshotRow(db));
+  if (!row) return null;
 
-  const artifactRow = await readHomepageArtifactSnapshotRow(db);
-  if (!artifactRow) return null;
+  const age = Math.max(0, now - row.generated_at);
+  if (age > MAX_STALE_SECONDS) return null;
 
-  const artifact = readHomepageArtifactFromRow(artifactRow, now, MAX_STALE_SECONDS);
-  if (!artifact) {
+  const parsed = safeJsonParse(row.body_json);
+  if (parsed === null) return null;
+
+  const render = readStoredHomepageSnapshotRender(parsed);
+  if (!render) {
     console.warn('homepage snapshot: invalid stale render payload');
     return null;
   }
 
   return {
-    data: artifact.data,
-    age: artifact.age,
+    data: render,
+    age,
   };
 }
 
@@ -836,29 +704,31 @@ export async function readStaleHomepageSnapshotArtifactJson(
   db: D1Database,
   now: number,
 ): Promise<{ bodyJson: string; age: number } | null> {
-  const homepageRow = await readHomepageSnapshotRow(db);
-  const homepageArtifact = homepageRow
-    ? readHomepageArtifactFromRow(homepageRow, now, MAX_STALE_SECONDS)
-    : null;
-  if (homepageArtifact) {
+  const row = (await readHomepageArtifactSnapshotRow(db)) ?? (await readHomepageSnapshotRow(db));
+  if (!row) return null;
+
+  const age = Math.max(0, now - row.generated_at);
+  if (age > MAX_STALE_SECONDS) return null;
+
+  if (looksLikeSerializedHomepageArtifact(row.body_json)) {
     return {
-      bodyJson: homepageArtifact.bodyJson,
-      age: homepageArtifact.age,
+      bodyJson: row.body_json,
+      age,
     };
   }
 
-  const artifactRow = await readHomepageArtifactSnapshotRow(db);
-  if (!artifactRow) return null;
+  const parsed = safeJsonParse(row.body_json);
+  if (parsed === null) return null;
 
-  const artifact = readHomepageArtifactFromRow(artifactRow, now, MAX_STALE_SECONDS);
-  if (!artifact) {
+  const render = readStoredHomepageSnapshotRender(parsed);
+  if (!render) {
     console.warn('homepage snapshot: invalid stale render payload');
     return null;
   }
 
   return {
-    bodyJson: artifact.bodyJson,
-    age: artifact.age,
+    bodyJson: JSON.stringify(render),
+    age,
   };
 }
 
@@ -899,18 +769,27 @@ export async function writeHomepageSnapshot(
   payload: PublicHomepageResponse,
   trace?: Trace,
 ): Promise<void> {
+  const render = withTraceSync(trace, 'homepage_write_render', () =>
+    buildHomepageRenderArtifact(payload),
+  );
   const dataBodyJson = withTraceSync(trace, 'homepage_write_stringify_data', () =>
     JSON.stringify(payload),
   );
+  const renderBodyJson = withTraceSync(trace, 'homepage_write_stringify_artifact', () =>
+    JSON.stringify(render),
+  );
 
-  await withTraceAsync(trace, 'homepage_write_run', async () =>
-    await homepageSnapshotUpsertStatement(
-      db,
-      SNAPSHOT_KEY,
-      payload.generated_at,
-      dataBodyJson,
-      now,
-    ).run(),
+  await withTraceAsync(trace, 'homepage_write_batch', async () =>
+    await db.batch([
+      homepageSnapshotUpsertStatement(db, SNAPSHOT_KEY, payload.generated_at, dataBodyJson, now),
+      homepageSnapshotUpsertStatement(
+        db,
+        SNAPSHOT_ARTIFACT_KEY,
+        render.generated_at,
+        renderBodyJson,
+        now,
+      ),
+    ]),
   );
 }
 

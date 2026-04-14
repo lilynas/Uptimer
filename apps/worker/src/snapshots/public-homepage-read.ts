@@ -1,5 +1,4 @@
 import { AppError } from '../middleware/errors';
-import type { PublicHomepageResponse } from '../schemas/public-homepage';
 
 const SNAPSHOT_KEY = 'homepage';
 const SNAPSHOT_ARTIFACT_KEY = 'homepage:artifact';
@@ -21,35 +20,12 @@ const READ_SNAPSHOT_GENERATED_AT_SQL = `
 
 const readSnapshotStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 const readSnapshotGeneratedAtStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
-let homepageRenderModulePromise: Promise<typeof import('./public-homepage')> | null = null;
-let homepageArtifactCache:
-  | {
-      generatedAt: number;
-      sourceBodyJson: string;
-      bodyJson: string;
-      data: PublicHomepageRenderArtifact;
-    }
-  | null = null;
-
-type PublicHomepageRenderArtifact = {
-  generated_at: number;
-  preload_html: string;
-  snapshot: PublicHomepageResponse;
-  meta_title: string;
-  meta_description: string;
-};
-
-type HomepageArtifactReadResult = {
-  age: number;
-  bodyJson: string;
-  data: PublicHomepageRenderArtifact;
-};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function looksLikeHomepagePayload(value: unknown): value is PublicHomepageResponse {
+function looksLikeHomepagePayload(value: unknown): boolean {
   if (!isRecord(value)) return false;
   return (
     typeof value.generated_at === 'number' &&
@@ -64,7 +40,7 @@ function looksLikeHomepagePayload(value: unknown): value is PublicHomepageRespon
   );
 }
 
-function looksLikeHomepageArtifact(value: unknown): value is PublicHomepageRenderArtifact {
+function looksLikeHomepageArtifact(value: unknown): boolean {
   if (!isRecord(value)) return false;
   return (
     typeof value.generated_at === 'number' &&
@@ -73,22 +49,6 @@ function looksLikeHomepageArtifact(value: unknown): value is PublicHomepageRende
     typeof value.meta_description === 'string' &&
     looksLikeHomepagePayload(value.snapshot)
   );
-}
-
-function readRenderableHomepageSnapshotData(value: unknown): PublicHomepageResponse | null {
-  if (looksLikeHomepagePayload(value)) {
-    return value.bootstrap_mode === 'full' ? (value as PublicHomepageResponse) : null;
-  }
-
-  if (!isRecord(value)) return null;
-  const version = value.version;
-  if (version !== SPLIT_SNAPSHOT_VERSION && version !== LEGACY_COMBINED_SNAPSHOT_VERSION) {
-    return null;
-  }
-
-  return looksLikeHomepagePayload(value.data) && value.data.bootstrap_mode === 'full'
-    ? (value.data as PublicHomepageResponse)
-    : null;
 }
 
 function looksLikeSerializedHomepageArtifact(text: string): boolean {
@@ -152,94 +112,6 @@ async function readSnapshotGeneratedAt(db: D1Database, key: string): Promise<num
     console.warn('homepage snapshot: read generated_at failed', err);
     return null;
   }
-}
-
-function readCachedHomepageArtifact(
-  row: { generated_at: number; body_json: string },
-): HomepageArtifactReadResult | null {
-  if (
-    homepageArtifactCache?.generatedAt === row.generated_at &&
-    homepageArtifactCache.sourceBodyJson === row.body_json
-  ) {
-    return {
-      age: 0,
-      bodyJson: homepageArtifactCache.bodyJson,
-      data: homepageArtifactCache.data,
-    };
-  }
-
-  return null;
-}
-
-async function synthesizeHomepageArtifact(
-  row: { generated_at: number; body_json: string },
-  payload: PublicHomepageResponse,
-): Promise<HomepageArtifactReadResult> {
-  const cached = readCachedHomepageArtifact(row);
-  if (cached) {
-    return cached;
-  }
-
-  const mod =
-    homepageRenderModulePromise ??
-    (homepageRenderModulePromise = import('./public-homepage'));
-  const data = (await mod).buildHomepageRenderArtifact(payload);
-  const bodyJson = JSON.stringify(data);
-  homepageArtifactCache = {
-    generatedAt: row.generated_at,
-    sourceBodyJson: row.body_json,
-    bodyJson,
-    data,
-  };
-  return {
-    age: 0,
-    bodyJson,
-    data,
-  };
-}
-
-async function readHomepageArtifactFromRow(
-  row: { generated_at: number; body_json: string },
-  now: number,
-  maxAgeSeconds: number,
-): Promise<HomepageArtifactReadResult | null> {
-  const age = Math.max(0, now - row.generated_at);
-  if (age > maxAgeSeconds) return null;
-
-  if (looksLikeSerializedHomepageArtifact(row.body_json)) {
-    const parsed = safeJsonParse(row.body_json);
-    if (parsed === null) return null;
-    if (!looksLikeHomepageArtifact(parsed)) {
-      console.warn('homepage snapshot: invalid artifact payload');
-      return null;
-    }
-    return {
-      age,
-      bodyJson: row.body_json,
-      data: parsed as PublicHomepageRenderArtifact,
-    };
-  }
-
-  const parsed = safeJsonParse(row.body_json);
-  if (parsed === null) return null;
-
-  if (looksLikeHomepageArtifact(parsed)) {
-    return {
-      age,
-      bodyJson: JSON.stringify(parsed),
-      data: parsed as PublicHomepageRenderArtifact,
-    };
-  }
-
-  const payload = readRenderableHomepageSnapshotData(parsed);
-  if (!payload) return null;
-
-  const synthesized = await synthesizeHomepageArtifact(row, payload);
-  return {
-    age,
-    bodyJson: synthesized.bodyJson,
-    data: synthesized.data,
-  };
 }
 
 export async function readHomepageSnapshotGeneratedAt(db: D1Database): Promise<number | null> {
@@ -313,60 +185,51 @@ export async function readHomepageSnapshotArtifactJson(
   db: D1Database,
   now: number,
 ): Promise<{ bodyJson: string; age: number } | null> {
-  const homepageRow = await readSnapshotRow(db, SNAPSHOT_KEY);
-  const homepageArtifact = homepageRow
-    ? await readHomepageArtifactFromRow(homepageRow, now, MAX_AGE_SECONDS)
-    : null;
-  if (homepageArtifact) {
-    return {
-      bodyJson: homepageArtifact.bodyJson,
-      age: homepageArtifact.age,
-    };
+  const row =
+    (await readSnapshotRow(db, SNAPSHOT_ARTIFACT_KEY)) ?? (await readSnapshotRow(db, SNAPSHOT_KEY));
+  if (!row) return null;
+
+  const age = Math.max(0, now - row.generated_at);
+  if (age > MAX_AGE_SECONDS) return null;
+
+  // Fast-path: already-stored JSON (written by our own snapshot writer).
+  if (looksLikeSerializedHomepageArtifact(row.body_json)) {
+    return { bodyJson: row.body_json, age };
   }
 
-  const artifactRow = await readSnapshotRow(db, SNAPSHOT_ARTIFACT_KEY);
-  if (!artifactRow) return null;
-
-  const artifact = await readHomepageArtifactFromRow(artifactRow, now, MAX_AGE_SECONDS);
-  if (!artifact) {
+  const parsed = safeJsonParse(row.body_json);
+  if (parsed === null) return null;
+  if (!looksLikeHomepageArtifact(parsed)) {
     console.warn('homepage snapshot: invalid artifact payload');
     return null;
   }
 
-  return {
-    bodyJson: artifact.bodyJson,
-    age: artifact.age,
-  };
+  return { bodyJson: JSON.stringify(parsed), age };
 }
 
 export async function readStaleHomepageSnapshotArtifactJson(
   db: D1Database,
   now: number,
 ): Promise<{ bodyJson: string; age: number } | null> {
-  const homepageRow = await readSnapshotRow(db, SNAPSHOT_KEY);
-  const homepageArtifact = homepageRow
-    ? await readHomepageArtifactFromRow(homepageRow, now, MAX_STALE_SECONDS)
-    : null;
-  if (homepageArtifact) {
-    return {
-      bodyJson: homepageArtifact.bodyJson,
-      age: homepageArtifact.age,
-    };
+  const row =
+    (await readSnapshotRow(db, SNAPSHOT_ARTIFACT_KEY)) ?? (await readSnapshotRow(db, SNAPSHOT_KEY));
+  if (!row) return null;
+
+  const age = Math.max(0, now - row.generated_at);
+  if (age > MAX_STALE_SECONDS) return null;
+
+  if (looksLikeSerializedHomepageArtifact(row.body_json)) {
+    return { bodyJson: row.body_json, age };
   }
 
-  const artifactRow = await readSnapshotRow(db, SNAPSHOT_ARTIFACT_KEY);
-  if (!artifactRow) return null;
-
-  const artifact = await readHomepageArtifactFromRow(artifactRow, now, MAX_STALE_SECONDS);
-  if (!artifact) {
+  const parsed = safeJsonParse(row.body_json);
+  if (parsed === null) return null;
+  if (!looksLikeHomepageArtifact(parsed)) {
     console.warn('homepage snapshot: invalid stale artifact payload');
     return null;
   }
 
-  return {
-    bodyJson: artifact.bodyJson,
-    age: artifact.age,
-  };
+  return { bodyJson: JSON.stringify(parsed), age };
 }
 
 export function assertHomepageArtifactAvailable(): never {
