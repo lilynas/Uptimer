@@ -130,10 +130,10 @@ function buildUptimeStripSvg(
     const x = index * (barWidth + gap);
     const fill = uptimeFillFromMilli(strip.uptime_pct_milli[index]);
     rects.push(
-      `<rect x='${x}' width='${barWidth}' height='${height}' rx='1' fill='${fill}'/>`,
+      `<rect x="${x}" width="${barWidth}" height="${height}" rx="1" fill="${fill}"/>`,
     );
   }
-  return `<svg class='usv' viewBox='0 0 ${width} ${height}' preserveAspectRatio='none' aria-hidden='true'>${rects.join('')}</svg>`;
+  return `<svg class="usv" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">${rects.join('')}</svg>`;
 }
 
 function buildHeartbeatStripSvg(
@@ -156,10 +156,10 @@ function buildHeartbeatStripSvg(
     );
     const y = height - barHeight;
     rects.push(
-      `<rect x='${x}' y='${y}' width='${barWidth}' height='${barHeight}' rx='1' fill='${heartbeatFillFromCode(strip.status_codes[index])}'/>`,
+      `<rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="1" fill="${heartbeatFillFromCode(strip.status_codes[index])}"/>`,
     );
   }
-  return `<svg class='usv' viewBox='0 0 ${width} ${height}' preserveAspectRatio='none' aria-hidden='true'>${rects.join('')}</svg>`;
+  return `<svg class="usv" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">${rects.join('')}</svg>`;
 }
 
 function renderIncidentCard(
@@ -170,10 +170,10 @@ function renderIncidentCard(
     incident.impact === 'major' || incident.impact === 'critical' ? 'down' : 'paused';
 
   const parts: string[] = [
-    `<article class='card'><div class='row'><h4 class='mn'>${escapeHtml(incident.title)}</h4><span class='sb sb-${impactVariant}'>${escapeHtml(incident.impact)}</span></div><div class='ft'>${formatTimestamp(incident.started_at)}</div>`,
+    `<article class="card"><div class="row"><h4 class="mn">${escapeHtml(incident.title)}</h4><span class="sb sb-${impactVariant}">${escapeHtml(incident.impact)}</span></div><div class="ft">${formatTimestamp(incident.started_at)}</div>`,
   ];
   if (incident.message) {
-    parts.push(`<p class='bt'>${escapeHtml(incident.message)}</p>`);
+    parts.push(`<p class="bt">${escapeHtml(incident.message)}</p>`);
   }
   parts.push('</article>');
   return parts.join('');
@@ -194,13 +194,13 @@ function renderMaintenanceCard(
   }
 
   const parts: string[] = [
-    `<article class='card'><div><h4 class='mn'>${escapeHtml(window.title)}</h4><div class='ft'>${formatTimestamp(window.starts_at)} - ${formatTimestamp(window.ends_at)}</div></div>`,
+    `<article class="card"><div><h4 class="mn">${escapeHtml(window.title)}</h4><div class="ft">${formatTimestamp(window.starts_at)} - ${formatTimestamp(window.ends_at)}</div></div>`,
   ];
   if (affected.length > 0) {
-    parts.push(`<div class='bt'>Affected: ${affected.join(', ')}</div>`);
+    parts.push(`<div class="bt">Affected: ${affected.join(', ')}</div>`);
   }
   if (window.message) {
-    parts.push(`<p class='bt'>${escapeHtml(window.message)}</p>`);
+    parts.push(`<p class="bt">${escapeHtml(window.message)}</p>`);
   }
   parts.push('</article>');
   return parts.join('');
@@ -247,12 +247,12 @@ function renderPreload(
         : 'Never checked';
 
       monitorCardsParts.push(
-        `<article class='card'><div class='row'><div class='lhs'><span class='dot dot-${status}'></span><div class='ut'><div class='mn'>${escapeHtml(monitor.name)}</div><div class='mt'>${escapeHtml(monitor.type)}</div></div></div><div class='rhs'><span class='up'>${escapeHtml(uptimePct)}</span><span class='sb sb-${status}'>${statusLabel}</span></div></div><div><div class='lbl'>Availability (30d)</div><div class='strip'>${buildUptimeStripSvg(monitor.uptime_day_strip)}</div></div><div><div class='lbl'>Recent checks</div><div class='strip'>${buildHeartbeatStripSvg(monitor.heartbeat_strip)}</div></div><div class='ft'>${lastCheckedLabel}</div></article>`,
+        `<article class="card"><div class="row"><div class="lhs"><span class="dot dot-${status}"></span><div class="ut"><div class="mn">${escapeHtml(monitor.name)}</div><div class="mt">${escapeHtml(monitor.type)}</div></div></div><div class="rhs"><span class="up">${escapeHtml(uptimePct)}</span><span class="sb sb-${status}">${statusLabel}</span></div></div><div><div class="lbl">Availability (30d)</div><div class="strip">${buildUptimeStripSvg(monitor.uptime_day_strip)}</div></div><div><div class="lbl">Recent checks</div><div class="strip">${buildHeartbeatStripSvg(monitor.heartbeat_strip)}</div></div><div class="ft">${lastCheckedLabel}</div></article>`,
       );
     }
 
     groupedMonitorsParts.push(
-      `<section class='sg'><div class='sgh'><h4 class='sgt'>${escapeHtml(groupName)}</h4><span class='sgc'>${groupMonitors.length}</span></div><div class='grid'>${monitorCardsParts.join('')}</div></section>`,
+      `<section class="sg"><div class="sgh"><h4 class="sgt">${escapeHtml(groupName)}</h4><span class="sgc">${groupMonitors.length}</span></div><div class="grid">${monitorCardsParts.join('')}</div></section>`,
     );
   }
 
@@ -274,7 +274,7 @@ function renderPreload(
       }
     }
 
-    maintenanceSection = `<section class='sec'><h3 class='sh'>Scheduled Maintenance</h3>${activeCards.length > 0 ? `<div class='st'>${activeCards.join('')}</div>` : ''}${upcomingCards.length > 0 ? `<div class='st'>${upcomingCards.join('')}</div>` : ''}</section>`;
+    maintenanceSection = `<section class="sec"><h3 class="sh">Scheduled Maintenance</h3>${activeCards.length > 0 ? `<div class="st">${activeCards.join('')}</div>` : ''}${upcomingCards.length > 0 ? `<div class="st">${upcomingCards.join('')}</div>` : ''}</section>`;
   }
 
   let incidentSection = '';
@@ -283,26 +283,26 @@ function renderPreload(
     for (const incident of snapshot.active_incidents) {
       incidentCards.push(renderIncidentCard(incident, formatTimestamp));
     }
-    incidentSection = `<section class='sec'><h3 class='sh'>Active Incidents</h3><div class='st'>${incidentCards.join('')}</div></section>`;
+    incidentSection = `<section class="sec"><h3 class="sh">Active Incidents</h3><div class="st">${incidentCards.join('')}</div></section>`;
   }
 
   const incidentHistory = snapshot.resolved_incident_preview
     ? renderIncidentCard(snapshot.resolved_incident_preview, formatTimestamp)
-    : `<div class='card'>No past incidents</div>`;
+    : '<div class="card">No past incidents</div>';
   const maintenanceHistory = snapshot.maintenance_history_preview
     ? monitorNames
       ? renderMaintenanceCard(snapshot.maintenance_history_preview, monitorNames, formatTimestamp)
-      : `<div class='card'>No past maintenance</div>`
-    : `<div class='card'>No past maintenance</div>`;
+      : '<div class="card">No past maintenance</div>'
+    : '<div class="card">No past maintenance</div>';
   const descriptionHtml = siteDescription
-    ? `<div class='ud'>${escapeHtml(siteDescription)}</div>`
+    ? `<div class="ud">${escapeHtml(siteDescription)}</div>`
     : '';
   const hiddenMonitorMessage =
     hiddenMonitorCount > 0
-      ? `<div class='card ft'>${hiddenMonitorCount} more services will appear after the app finishes loading.</div>`
+      ? `<div class="card ft">${hiddenMonitorCount} more services will appear after the app finishes loading.</div>`
       : '';
 
-  return `<div class='hp'><header class='uh'><div class='uw uhw'><div class='ut'><div class='un'>${escapeHtml(siteTitle)}</div>${descriptionHtml}</div><span class='sb sb-${overall}'>${escapeHtml(overall)}</span></div></header><main class='uw um'><section class='bn'><div class='bt'>${escapeHtml(bannerTitle)}</div><div class='bu'>Updated: ${formatTimestamp(generatedAt)}</div></section>${maintenanceSection}${incidentSection}<section class='sec'><h3 class='sh'>Services</h3>${groupedMonitorsParts.join('')}${hiddenMonitorMessage}</section><section class='sec ih'><div><h3 class='sh'>Incident History</h3>${incidentHistory}</div><div><h3 class='sh'>Maintenance History</h3>${maintenanceHistory}</div></section></main></div>`;
+  return `<div class="hp"><header class="uh"><div class="uw uhw"><div class="ut"><div class="un">${escapeHtml(siteTitle)}</div>${descriptionHtml}</div><span class="sb sb-${overall}">${escapeHtml(overall)}</span></div></header><main class="uw um"><section class="bn"><div class="bt">${escapeHtml(bannerTitle)}</div><div class="bu">Updated: ${formatTimestamp(generatedAt)}</div></section>${maintenanceSection}${incidentSection}<section class="sec"><h3 class="sh">Services</h3>${groupedMonitorsParts.join('')}${hiddenMonitorMessage}</section><section class="sec ih"><div><h3 class="sh">Incident History</h3>${incidentHistory}</div><div><h3 class="sh">Maintenance History</h3>${maintenanceHistory}</div></section></main></div>`;
 }
 
 export function buildHomepageRenderArtifact(
@@ -315,14 +315,17 @@ export function buildHomepageRenderArtifact(
   const allMonitorNames = needsMonitorNames
     ? new Map(snapshot.monitors.map((monitor) => [monitor.id, monitor.name]))
     : undefined;
-  const bootstrapSnapshot: PublicHomepageResponse =
+  const bootstrapSnapshot =
     snapshot.bootstrap_mode === 'partial' || snapshot.monitors.length > MAX_BOOTSTRAP_MONITORS
       ? {
           ...snapshot,
           bootstrap_mode: 'partial' as const,
           monitors: snapshot.monitors.slice(0, MAX_BOOTSTRAP_MONITORS),
         }
-      : snapshot;
+      : {
+          ...snapshot,
+          bootstrap_mode: 'full' as const,
+        };
   const metaTitle = normalizeSnapshotText(snapshot.site_title, 'Uptimer');
   const fallbackDescription = normalizeSnapshotText(
     snapshot.banner.title,
@@ -334,24 +337,11 @@ export function buildHomepageRenderArtifact(
 
   return {
     generated_at: snapshot.generated_at,
-    preload_html: `<div id='uptimer-preload'>${renderPreload(bootstrapSnapshot, allMonitorNames)}</div>`,
+    preload_html: `<div id="uptimer-preload">${renderPreload(bootstrapSnapshot, allMonitorNames)}</div>`,
     snapshot: bootstrapSnapshot,
     meta_title: metaTitle,
     meta_description: metaDescription,
   };
-}
-
-function buildHomepageRenderArtifactBodyJson(opts: {
-  fullSnapshot: PublicHomepageResponse;
-  render: PublicHomepageRenderArtifact;
-  snapshotBodyJson: string | null;
-}): string {
-  const snapshotJson =
-    opts.snapshotBodyJson && opts.render.snapshot === opts.fullSnapshot
-      ? opts.snapshotBodyJson
-      : JSON.stringify(opts.render.snapshot);
-
-  return `{"generated_at":${opts.render.generated_at},"preload_html":${JSON.stringify(opts.render.preload_html)},"snapshot":${snapshotJson},"meta_title":${JSON.stringify(opts.render.meta_title)},"meta_description":${JSON.stringify(opts.render.meta_description)}}`;
 }
 
 function looksLikeHomepagePayload(value: unknown): value is PublicHomepageResponse {
@@ -757,11 +747,7 @@ export async function writeHomepageSnapshot(
 ): Promise<void> {
   const render = buildHomepageRenderArtifact(payload);
   const dataBodyJson = JSON.stringify(payload);
-  const renderBodyJson = buildHomepageRenderArtifactBodyJson({
-    fullSnapshot: payload,
-    render,
-    snapshotBodyJson: dataBodyJson,
-  });
+  const renderBodyJson = JSON.stringify(render);
 
   await db.batch([
     homepageSnapshotUpsertStatement(db, SNAPSHOT_KEY, payload.generated_at, dataBodyJson, now),
@@ -781,11 +767,7 @@ export async function writeHomepageArtifactSnapshot(
   payload: PublicHomepageResponse,
 ): Promise<void> {
   const render = buildHomepageRenderArtifact(payload);
-  const renderBodyJson = buildHomepageRenderArtifactBodyJson({
-    fullSnapshot: payload,
-    render,
-    snapshotBodyJson: null,
-  });
+  const renderBodyJson = JSON.stringify(render);
 
   await homepageSnapshotUpsertStatement(
     db,
