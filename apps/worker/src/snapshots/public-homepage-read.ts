@@ -29,9 +29,18 @@ const READ_REFRESH_SNAPSHOT_ROW_BY_KEY_SQL = `
   FROM public_snapshots
   WHERE key = ?1
 `;
+const READ_REFRESH_SNAPSHOT_METADATA_ROW_BY_KEY_SQL = `
+  SELECT generated_at, updated_at
+  FROM public_snapshots
+  WHERE key = ?1
+`;
 const readRefreshSnapshotMetadataStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 const readRefreshSnapshotRowsStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 const readRefreshSnapshotRowByKeyStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
+const readRefreshSnapshotMetadataRowByKeyStatementByDb = new WeakMap<
+  D1Database,
+  D1PreparedStatement
+>();
 const normalizedHomepagePayloadCacheByDb = new WeakMap<
   D1Database,
   Map<SnapshotKey, NormalizedSnapshotRow>
@@ -494,6 +503,25 @@ async function readRefreshSnapshotRowByKey(
   }
 }
 
+async function readRefreshSnapshotMetadataRowByKey(
+  db: D1Database,
+  key: SnapshotKey,
+): Promise<SnapshotRefreshMetadataRow | null> {
+  try {
+    const cached = readRefreshSnapshotMetadataRowByKeyStatementByDb.get(db);
+    const statement = cached ?? db.prepare(READ_REFRESH_SNAPSHOT_METADATA_ROW_BY_KEY_SQL);
+    if (!cached) {
+      readRefreshSnapshotMetadataRowByKeyStatementByDb.set(db, statement);
+    }
+
+    const row = await statement.bind(key).first<Omit<SnapshotRefreshMetadataRow, 'key'>>();
+    return row ? { key, ...row } : null;
+  } catch (err) {
+    console.warn('homepage snapshot: refresh metadata row read failed', err);
+    return null;
+  }
+}
+
 function listSnapshotCandidatesFromRefreshRows(
   rows: readonly SnapshotRefreshMetadataRow[],
 ): SnapshotCandidate[] {
@@ -695,17 +723,17 @@ export async function readHomepageRefreshBaseSnapshot(
   snapshot: PublicHomepageResponse | null;
   seedDataSnapshot: boolean;
 }> {
-  const refreshRows = await readRefreshSnapshotRows(db);
-  const rowByKey = new Map(refreshRows.map((row) => [row.key, row]));
   let invalid = false;
   const parsedByKey = new Map<SnapshotKey, ParsedSnapshotRow | null>();
 
-  const readRefreshCandidate = (candidate: SnapshotCandidate): ParsedSnapshotRow | null => {
+  const readRefreshCandidate = (
+    candidate: SnapshotCandidate,
+    row: SnapshotRefreshRow | null,
+  ): ParsedSnapshotRow | null => {
     if (parsedByKey.has(candidate.key)) {
       return parsedByKey.get(candidate.key) ?? null;
     }
 
-    const row = rowByKey.get(candidate.key);
     if (!row?.body_json || row.generated_at !== candidate.generatedAt) {
       parsedByKey.set(candidate.key, null);
       return null;
@@ -769,29 +797,103 @@ export async function readHomepageRefreshBaseSnapshot(
     return parsedRow;
   };
 
-  const orderedCandidates = listSnapshotCandidatesFromRefreshRows(refreshRows).sort(
-    comparePayloadCandidates,
-  );
+  let homepageRow = await readRefreshSnapshotRowByKey(db, SNAPSHOT_KEY);
+  let artifactRow: SnapshotRefreshRow | null = null;
 
-  for (const candidate of orderedCandidates) {
-    if (!isSameUtcDay(candidate.generatedAt, now)) {
-      continue;
-    }
-
-    const sameDayBase = readRefreshCandidate(candidate);
-    if (!sameDayBase) {
-      continue;
-    }
-
-    return {
-      generatedAt: sameDayBase.generatedAt,
-      snapshot: sameDayBase.snapshot,
-      seedDataSnapshot: false,
-    };
+  if (homepageRow === null) {
+    artifactRow = await readRefreshSnapshotRowByKey(db, SNAPSHOT_ARTIFACT_KEY);
   }
 
+  if (homepageRow === null && artifactRow === null) {
+    const refreshRows = await readRefreshSnapshotRows(db);
+    const rowByKey = new Map(refreshRows.map((row) => [row.key, row]));
+    homepageRow = rowByKey.get(SNAPSHOT_KEY) ?? null;
+    artifactRow = rowByKey.get(SNAPSHOT_ARTIFACT_KEY) ?? null;
+  }
+
+  const homepageCandidate: SnapshotCandidate | null = homepageRow
+    ? {
+        key: SNAPSHOT_KEY,
+        generatedAt: homepageRow.generated_at,
+        updatedAt: toSnapshotUpdatedAt(homepageRow),
+      }
+    : null;
+
+  if (homepageCandidate && isSameUtcDay(homepageCandidate.generatedAt, now)) {
+    const homepageBase = readRefreshCandidate(homepageCandidate, homepageRow);
+    if (homepageBase) {
+      const artifactMetadataCandidate: SnapshotCandidate | null = artifactRow
+        ? {
+            key: SNAPSHOT_ARTIFACT_KEY,
+            generatedAt: artifactRow.generated_at,
+            updatedAt: toSnapshotUpdatedAt(artifactRow),
+          }
+        : null;
+
+      const resolvedArtifactMetadataCandidate =
+        artifactMetadataCandidate ??
+        (await (async (): Promise<SnapshotCandidate | null> => {
+          const artifactMetadata = await readRefreshSnapshotMetadataRowByKey(
+            db,
+            SNAPSHOT_ARTIFACT_KEY,
+          );
+          if (!artifactMetadata) {
+            return null;
+          }
+          const candidate: SnapshotCandidate = {
+            key: SNAPSHOT_ARTIFACT_KEY,
+            generatedAt: artifactMetadata.generated_at,
+            updatedAt: toSnapshotUpdatedAt(artifactMetadata),
+          };
+          return isFutureSnapshotCandidate(candidate, now) ? null : candidate;
+        })());
+
+      if (
+        !resolvedArtifactMetadataCandidate ||
+        !isSameUtcDay(resolvedArtifactMetadataCandidate.generatedAt, now) ||
+        comparePayloadCandidates(resolvedArtifactMetadataCandidate, homepageCandidate) >= 0
+      ) {
+        return {
+          generatedAt: homepageBase.generatedAt,
+          snapshot: homepageBase.snapshot,
+          seedDataSnapshot: false,
+        };
+      }
+    }
+  }
+
+  if (artifactRow === null) {
+    artifactRow = await readRefreshSnapshotRowByKey(db, SNAPSHOT_ARTIFACT_KEY);
+  }
+
+  const artifactCandidate: SnapshotCandidate | null = artifactRow
+    ? {
+        key: SNAPSHOT_ARTIFACT_KEY,
+        generatedAt: artifactRow.generated_at,
+        updatedAt: toSnapshotUpdatedAt(artifactRow),
+      }
+    : null;
+
+  if (artifactCandidate && isSameUtcDay(artifactCandidate.generatedAt, now)) {
+    const artifactBase = readRefreshCandidate(artifactCandidate, artifactRow);
+    if (artifactBase) {
+      return {
+        generatedAt: artifactBase.generatedAt,
+        snapshot: artifactBase.snapshot,
+        seedDataSnapshot: false,
+      };
+    }
+  }
+
+  const orderedCandidates = [homepageCandidate, artifactCandidate]
+    .filter((candidate): candidate is SnapshotCandidate => candidate !== null)
+    .sort(comparePayloadCandidates);
+
   for (const candidate of orderedCandidates) {
-    const freshestBase = readRefreshCandidate(candidate);
+    const freshestBase = readRefreshCandidate(
+      candidate,
+      candidate.key === SNAPSHOT_KEY ? homepageRow : artifactRow,
+    );
     if (!freshestBase) {
       continue;
     }

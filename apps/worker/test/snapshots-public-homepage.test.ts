@@ -497,6 +497,36 @@ describe('snapshots/public-homepage', () => {
     });
   });
 
+  it('uses the same-day homepage payload row as the refresh base without reading the artifact row', async () => {
+    const now = 1_728_000_500;
+    const payload = samplePayload(now - 60);
+    const readKeys: string[] = [];
+    const db = createFakeD1Database([
+      {
+        match: 'select generated_at, updated_at, body_json from public_snapshots where key = ?1',
+        first: (args) => {
+          const key = String(args[0]);
+          readKeys.push(key);
+          if (key === 'homepage') {
+            return {
+              generated_at: payload.generated_at,
+              updated_at: payload.generated_at,
+              body_json: JSON.stringify(payload),
+            };
+          }
+          throw new Error(`unexpected artifact read: ${key}`);
+        },
+      },
+    ]);
+
+    await expect(readHomepageRefreshBaseSnapshot(db, now)).resolves.toEqual({
+      generatedAt: payload.generated_at,
+      snapshot: payload,
+      seedDataSnapshot: false,
+    });
+    expect(readKeys).toEqual(['homepage']);
+  });
+
   it('keeps using the valid homepage row when an equal-age artifact row is corrupted', async () => {
     const now = 1_728_000_500;
     const payload = samplePayload(now - 60);
