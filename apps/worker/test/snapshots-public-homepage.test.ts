@@ -23,6 +23,7 @@ import {
 } from '../src/snapshots/public-homepage';
 import {
   readHomepageRefreshBaseSnapshot,
+  readHomepageSnapshotGeneratedAt,
   readHomepageSnapshotJsonAnyAge,
 } from '../src/snapshots/public-homepage-read';
 import { createFakeD1Database } from './helpers/fake-d1';
@@ -601,6 +602,38 @@ describe('snapshots/public-homepage', () => {
       bodyJson: JSON.stringify(fresherPayload),
       age: 10,
     });
+  });
+
+  it('prefers the freshest valid snapshot timestamp across homepage and artifact rows', async () => {
+    const now = 1_728_000_200;
+    const olderPayload = samplePayload(now - 30);
+    const fresherArtifactPayload = samplePayload(now - 10);
+    const db = createFakeD1Database([
+      {
+        match: 'from public_snapshots',
+        first: (args) => {
+          if (args[0] === 'homepage') {
+            return {
+              generated_at: olderPayload.generated_at,
+              updated_at: olderPayload.generated_at,
+              body_json: JSON.stringify(olderPayload),
+            };
+          }
+          if (args[0] === 'homepage:artifact') {
+            return {
+              generated_at: fresherArtifactPayload.generated_at,
+              updated_at: fresherArtifactPayload.generated_at,
+              body_json: JSON.stringify(buildHomepageRenderArtifact(fresherArtifactPayload)),
+            };
+          }
+          return null;
+        },
+      },
+    ]);
+
+    await expect(readHomepageSnapshotGeneratedAt(db, now)).resolves.toBe(
+      fresherArtifactPayload.generated_at,
+    );
   });
 
   it('falls back to the homepage payload row when the artifact row is invalid on the hot read path', async () => {
