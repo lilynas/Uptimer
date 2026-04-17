@@ -683,6 +683,63 @@ describe('snapshots/public-homepage', () => {
     });
   });
 
+  it('lazy-reads only the selected homepage body row when refresh metadata is available', async () => {
+    const now = 1_728_000_200;
+    const fresherPayload = samplePayload(now - 10);
+    const olderPayload = samplePayload(now - 30);
+    let metadataReads = 0;
+    const bodyReads: string[] = [];
+    const db = createFakeD1Database([
+      {
+        match: 'select key, generated_at, updated_at from public_snapshots',
+        all: () => {
+          metadataReads += 1;
+          return [
+            {
+              key: 'homepage',
+              generated_at: fresherPayload.generated_at,
+              updated_at: fresherPayload.generated_at,
+            },
+            {
+              key: 'homepage:artifact',
+              generated_at: olderPayload.generated_at,
+              updated_at: olderPayload.generated_at,
+            },
+          ];
+        },
+      },
+      {
+        match: 'select generated_at, updated_at, body_json from public_snapshots',
+        first: (args) => {
+          const key = String(args[0]);
+          bodyReads.push(key);
+          if (key === 'homepage') {
+            return {
+              generated_at: fresherPayload.generated_at,
+              updated_at: fresherPayload.generated_at,
+              body_json: JSON.stringify(fresherPayload),
+            };
+          }
+          if (key === 'homepage:artifact') {
+            return {
+              generated_at: olderPayload.generated_at,
+              updated_at: olderPayload.generated_at,
+              body_json: JSON.stringify(buildHomepageRenderArtifact(olderPayload)),
+            };
+          }
+          return null;
+        },
+      },
+    ]);
+
+    await expect(readHomepageSnapshotJsonAnyAge(db, now)).resolves.toEqual({
+      bodyJson: JSON.stringify(fresherPayload),
+      age: 10,
+    });
+    expect(metadataReads).toBe(1);
+    expect(bodyReads).toEqual(['homepage']);
+  });
+
   it('ignores future-dated stale artifact candidates on the public hot read path', async () => {
     const now = 1_728_000_200;
     const futurePayload = samplePayload(now + 600);

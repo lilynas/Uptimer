@@ -99,6 +99,11 @@ type CandidateReadResult = {
   invalid: boolean;
 };
 
+type RefreshSnapshotReadContext = {
+  metadataRows: SnapshotRefreshMetadataRow[];
+  readRowByKey: (key: SnapshotKey) => Promise<SnapshotRefreshRow | null>;
+};
+
 function isNoFakeD1HandlerError(err: unknown): err is Error {
   return (
     err instanceof Error &&
@@ -529,6 +534,46 @@ function listSnapshotCandidatesFromRefreshRows(
   }));
 }
 
+function toSnapshotRefreshMetadataRow(
+  row: Pick<SnapshotRefreshRow, 'key' | 'generated_at' | 'updated_at'>,
+): SnapshotRefreshMetadataRow {
+  return {
+    key: row.key,
+    generated_at: row.generated_at,
+    updated_at: row.updated_at ?? null,
+  };
+}
+
+async function createRefreshSnapshotReadContext(
+  db: D1Database,
+): Promise<RefreshSnapshotReadContext> {
+  const rowByKey = new Map<SnapshotKey, SnapshotRefreshRow | null>();
+  const readRowByKey = async (key: SnapshotKey): Promise<SnapshotRefreshRow | null> => {
+    if (rowByKey.has(key)) {
+      return rowByKey.get(key) ?? null;
+    }
+
+    const row = await readRefreshSnapshotRowByKey(db, key);
+    rowByKey.set(key, row);
+    return row;
+  };
+
+  const metadataRows = await readRefreshSnapshotMetadataRows(db);
+  if (metadataRows.length > 0) {
+    return { metadataRows, readRowByKey };
+  }
+
+  const refreshRows = await readRefreshSnapshotRows(db);
+  for (const row of refreshRows) {
+    rowByKey.set(row.key, row);
+  }
+
+  return {
+    metadataRows: refreshRows.map(toSnapshotRefreshMetadataRow),
+    readRowByKey,
+  };
+}
+
 function comparePayloadCandidates(a: SnapshotCandidate, b: SnapshotCandidate): number {
   if (a.generatedAt !== b.generatedAt) {
     return b.generatedAt - a.generatedAt;
@@ -549,15 +594,15 @@ function compareArtifactCandidates(a: SnapshotCandidate, b: SnapshotCandidate): 
   return a.key === SNAPSHOT_ARTIFACT_KEY ? -1 : 1;
 }
 
-function readValidatedSnapshotCandidateFromRefreshRows(opts: {
+async function readValidatedSnapshotCandidate(opts: {
   db: D1Database;
   candidate: SnapshotCandidate;
-  rowByKey: ReadonlyMap<SnapshotKey, SnapshotRefreshRow>;
+  readRowByKey: (key: SnapshotKey) => Promise<SnapshotRefreshRow | null>;
   normalize: (candidate: SnapshotCandidate, bodyJson: string) => string | null;
   cacheByDb: WeakMap<D1Database, Map<SnapshotKey, NormalizedSnapshotRow>>;
   globalCache: Map<SnapshotKey, RawNormalizedSnapshotRow>;
-}): CandidateReadResult {
-  const row = opts.rowByKey.get(opts.candidate.key);
+}): Promise<CandidateReadResult> {
+  const row = await opts.readRowByKey(opts.candidate.key);
   if (!row || row.generated_at !== opts.candidate.generatedAt) {
     return { row: null, invalid: false };
   }
@@ -689,17 +734,16 @@ export async function readHomepageSnapshotGeneratedAt(
 export async function readHomepageArtifactSnapshotGeneratedAt(
   db: D1Database,
 ): Promise<number | null> {
-  const refreshRows = await readRefreshSnapshotRows(db);
-  const rowByKey = new Map(refreshRows.map((row) => [row.key, row]));
-  const candidates = listSnapshotCandidatesFromRefreshRows(refreshRows)
+  const { metadataRows, readRowByKey } = await createRefreshSnapshotReadContext(db);
+  const candidates = listSnapshotCandidatesFromRefreshRows(metadataRows)
     .filter((candidate) => candidate.key === SNAPSHOT_ARTIFACT_KEY)
     .sort(compareArtifactCandidates);
 
   for (const candidate of candidates) {
-    const result = readValidatedSnapshotCandidateFromRefreshRows({
+    const result = await readValidatedSnapshotCandidate({
       db,
       candidate,
-      rowByKey,
+      readRowByKey,
       normalize: (_candidate, bodyJson) => normalizeHomepageArtifactBodyJson(bodyJson),
       cacheByDb: normalizedHomepageArtifactCacheByDb,
       globalCache: normalizedHomepageArtifactCacheGlobal,
@@ -823,17 +867,7 @@ export async function readHomepageRefreshBaseSnapshot(
   const metadataRows =
     refreshMetadataRows.length > 0
       ? refreshMetadataRows
-      : [...rowByKey.values()].flatMap((row) =>
-          row
-            ? [
-                {
-                  key: row.key,
-                  generated_at: row.generated_at,
-                  updated_at: row.updated_at ?? null,
-                } satisfies SnapshotRefreshMetadataRow,
-              ]
-            : [],
-        );
+      : [...rowByKey.values()].flatMap((row) => (row ? [toSnapshotRefreshMetadataRow(row)] : []));
   const metadataByKey = new Map(metadataRows.map((row) => [row.key, row]));
   const homepageMetadata = metadataByKey.get(SNAPSHOT_KEY) ?? null;
   const artifactMetadata = metadataByKey.get(SNAPSHOT_ARTIFACT_KEY) ?? null;
@@ -985,9 +1019,8 @@ export async function readHomepageSnapshotJsonAnyAge(
   now: number,
   maxStaleSeconds = MAX_STALE_SECONDS,
 ): Promise<{ bodyJson: string; age: number } | null> {
-  const refreshRows = await readRefreshSnapshotRows(db);
-  const rowByKey = new Map(refreshRows.map((row) => [row.key, row]));
-  const candidates = listSnapshotCandidatesFromRefreshRows(refreshRows)
+  const { metadataRows, readRowByKey } = await createRefreshSnapshotReadContext(db);
+  const candidates = listSnapshotCandidatesFromRefreshRows(metadataRows)
     .filter(
       (candidate) =>
         !isFutureSnapshotCandidate(candidate, now) &&
@@ -996,10 +1029,10 @@ export async function readHomepageSnapshotJsonAnyAge(
     .sort(comparePayloadCandidates);
 
   for (const candidate of candidates) {
-    const result = readValidatedSnapshotCandidateFromRefreshRows({
+    const result = await readValidatedSnapshotCandidate({
       db,
       candidate,
-      rowByKey,
+      readRowByKey,
       normalize: (currentCandidate, bodyJson) =>
         normalizeHomepagePayloadBodyJsonForKey(currentCandidate.key, bodyJson),
       cacheByDb: normalizedHomepagePayloadCacheByDb,
@@ -1039,9 +1072,8 @@ export async function readHomepageSnapshotArtifactJson(
   db: D1Database,
   now: number,
 ): Promise<{ bodyJson: string; age: number } | null> {
-  const refreshRows = await readRefreshSnapshotRows(db);
-  const rowByKey = new Map(refreshRows.map((row) => [row.key, row]));
-  const candidates = listSnapshotCandidatesFromRefreshRows(refreshRows)
+  const { metadataRows, readRowByKey } = await createRefreshSnapshotReadContext(db);
+  const candidates = listSnapshotCandidatesFromRefreshRows(metadataRows)
     .filter(
       (candidate) =>
         !isFutureSnapshotCandidate(candidate, now) &&
@@ -1050,10 +1082,10 @@ export async function readHomepageSnapshotArtifactJson(
     .sort(compareArtifactCandidates);
 
   for (const candidate of candidates) {
-    const result = readValidatedSnapshotCandidateFromRefreshRows({
+    const result = await readValidatedSnapshotCandidate({
       db,
       candidate,
-      rowByKey,
+      readRowByKey,
       normalize: (_candidate, bodyJson) => normalizeHomepageArtifactBodyJson(bodyJson),
       cacheByDb: normalizedHomepageArtifactCacheByDb,
       globalCache: normalizedHomepageArtifactCacheGlobal,
@@ -1085,9 +1117,8 @@ export async function readStaleHomepageSnapshotArtifactJson(
   db: D1Database,
   now: number,
 ): Promise<{ bodyJson: string; age: number } | null> {
-  const refreshRows = await readRefreshSnapshotRows(db);
-  const rowByKey = new Map(refreshRows.map((row) => [row.key, row]));
-  const candidates = listSnapshotCandidatesFromRefreshRows(refreshRows)
+  const { metadataRows, readRowByKey } = await createRefreshSnapshotReadContext(db);
+  const candidates = listSnapshotCandidatesFromRefreshRows(metadataRows)
     .filter(
       (candidate) =>
         !isFutureSnapshotCandidate(candidate, now) &&
@@ -1096,10 +1127,10 @@ export async function readStaleHomepageSnapshotArtifactJson(
     .sort(compareArtifactCandidates);
 
   for (const candidate of candidates) {
-    const result = readValidatedSnapshotCandidateFromRefreshRows({
+    const result = await readValidatedSnapshotCandidate({
       db,
       candidate,
-      rowByKey,
+      readRowByKey,
       normalize: (_candidate, bodyJson) => normalizeHomepageArtifactBodyJson(bodyJson),
       cacheByDb: normalizedHomepageArtifactCacheByDb,
       globalCache: normalizedHomepageArtifactCacheGlobal,

@@ -385,14 +385,28 @@ describe('public homepage route', () => {
 
   it('skips shared edge cache for homepage responses even when app-level CORS reflection is enabled', async () => {
     const payload = samplePayload(190);
-    const dbReads: string[] = [];
+    let metadataReads = 0;
+    const bodyReads: string[] = [];
     vi.spyOn(Date, 'now').mockReturnValue(200_000);
 
     const handlers: FakeD1QueryHandler[] = [
       {
+        match: 'select key, generated_at, updated_at from public_snapshots',
+        all: () => {
+          metadataReads += 1;
+          return [
+            {
+              key: 'homepage',
+              generated_at: payload.generated_at,
+              updated_at: payload.generated_at,
+            },
+          ];
+        },
+      },
+      {
         match: 'from public_snapshots',
         first: (args) => {
-          dbReads.push(String(args[0]));
+          bodyReads.push(String(args[0]));
           return args[0] === 'homepage'
             ? {
                 generated_at: payload.generated_at,
@@ -422,26 +436,34 @@ describe('public homepage route', () => {
     expect(first.headers.get('Access-Control-Allow-Origin')).toBe('https://one.example.com');
     expect(second.headers.get('Access-Control-Allow-Origin')).toBe('https://two.example.com');
     expect(third.headers.get('Access-Control-Allow-Origin')).toBe('https://one.example.com');
-    expect(dbReads).toEqual([
-      'homepage',
-      'homepage:artifact',
-      'homepage',
-      'homepage:artifact',
-      'homepage',
-      'homepage:artifact',
-    ]);
+    expect(metadataReads).toBe(3);
+    expect(bodyReads).toEqual(['homepage', 'homepage', 'homepage']);
   });
 
   it('serves a slightly stale homepage snapshot via the worker hot path', async () => {
     const payload = samplePayload(139);
-    const dbReads: string[] = [];
+    let metadataReads = 0;
+    const bodyReads: string[] = [];
     vi.spyOn(Date, 'now').mockReturnValue(200 * 1000);
 
     const res = await requestHomepageViaApp('/api/v1/public/homepage', [
       {
+        match: 'select key, generated_at, updated_at from public_snapshots',
+        all: () => {
+          metadataReads += 1;
+          return [
+            {
+              key: 'homepage',
+              generated_at: payload.generated_at,
+              updated_at: payload.generated_at,
+            },
+          ];
+        },
+      },
+      {
         match: 'from public_snapshots',
         first: (args) => {
-          dbReads.push(String(args[0]));
+          bodyReads.push(String(args[0]));
           return args[0] === 'homepage'
             ? {
                 generated_at: payload.generated_at,
@@ -454,7 +476,8 @@ describe('public homepage route', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(payload);
-    expect(dbReads).toEqual(['homepage', 'homepage:artifact']);
+    expect(metadataReads).toBe(1);
+    expect(bodyReads).toEqual(['homepage']);
     expect(res.headers.get('Cache-Control')).toContain('max-age=0');
   });
 
