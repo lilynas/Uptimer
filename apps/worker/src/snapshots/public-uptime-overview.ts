@@ -40,9 +40,14 @@ type SnapshotCacheEntry = {
   data: PublicUptimeOverviewResponse;
 };
 
+type SnapshotCacheGlobalEntry = SnapshotCacheEntry & {
+  rawBodyJson: string;
+};
+
 const readStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 const upsertStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 const cacheByDb = new WeakMap<D1Database, Map<PublicUptimeOverviewRange, SnapshotCacheEntry>>();
+const globalCacheByRange = new Map<PublicUptimeOverviewRange, SnapshotCacheGlobalEntry>();
 
 function getSnapshotKey(range: PublicUptimeOverviewRange): string {
   return SNAPSHOT_KEY_BY_RANGE[range];
@@ -117,6 +122,32 @@ function writeCachedSnapshot(
   return entry;
 }
 
+function readCachedSnapshotGlobal(
+  range: PublicUptimeOverviewRange,
+  generatedAt: number,
+  updatedAt: number,
+  rawBodyJson: string,
+): SnapshotCacheGlobalEntry | null {
+  const cached = globalCacheByRange.get(range);
+  if (!cached) {
+    return null;
+  }
+
+  return cached.generatedAt === generatedAt &&
+    cached.updatedAt === updatedAt &&
+    cached.rawBodyJson === rawBodyJson
+    ? cached
+    : null;
+}
+
+function writeCachedSnapshotGlobal(
+  range: PublicUptimeOverviewRange,
+  entry: SnapshotCacheGlobalEntry,
+): SnapshotCacheGlobalEntry {
+  globalCacheByRange.set(range, entry);
+  return entry;
+}
+
 export async function readPublicUptimeOverviewSnapshotJson(
   db: D1Database,
   range: PublicUptimeOverviewRange,
@@ -142,18 +173,32 @@ export async function readPublicUptimeOverviewSnapshotJson(
       };
     }
 
+    const globalCached = readCachedSnapshotGlobal(range, row.generated_at, updatedAt, row.body_json);
+    if (globalCached) {
+      writeCachedSnapshot(db, range, globalCached);
+      return {
+        bodyJson: globalCached.bodyJson,
+        age,
+      };
+    }
+
     const validated = parseSnapshotBody(range, row.body_json);
     if (!validated) {
       console.warn('uptime overview snapshot: invalid payload, falling back to live');
       return null;
     }
 
-    const next = writeCachedSnapshot(db, range, {
-      generatedAt: row.generated_at,
-      updatedAt,
-      bodyJson: validated.bodyJson,
-      data: validated.data,
-    });
+    const next = writeCachedSnapshot(
+      db,
+      range,
+      writeCachedSnapshotGlobal(range, {
+        generatedAt: row.generated_at,
+        updatedAt,
+        rawBodyJson: row.body_json,
+        bodyJson: validated.bodyJson,
+        data: validated.data,
+      }),
+    );
     return {
       bodyJson: next.bodyJson,
       age,
@@ -179,12 +224,14 @@ export async function writePublicUptimeOverviewSnapshots(
     }
 
     const bodyJson = JSON.stringify(parsed.data);
-    writeCachedSnapshot(db, range, {
+    const cached = writeCachedSnapshotGlobal(range, {
       generatedAt: parsed.data.generated_at,
       updatedAt: now,
+      rawBodyJson: bodyJson,
       bodyJson,
       data: parsed.data,
     });
+    writeCachedSnapshot(db, range, cached);
     writes.push(statement.bind(getSnapshotKey(range), parsed.data.generated_at, bodyJson, now));
   }
 
