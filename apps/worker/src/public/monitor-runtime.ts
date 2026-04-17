@@ -394,19 +394,44 @@ export function parsePublicMonitorRuntimeEntry(value: unknown): PublicMonitorRun
   return parsed.success ? parsed.data : null;
 }
 
-const runtimeTotalsEntrySchema = z.object({
-  monitor_id: z.number().int().positive(),
-  interval_sec: z.number().int().positive(),
-  range_start_at: z.number().int().nonnegative().nullable(),
-  materialized_at: z.number().int().nonnegative(),
-  last_checked_at: z.number().int().nonnegative().nullable(),
-  last_status_code: z.enum(['u', 'd', 'm', 'p', 'x']),
-  last_outage_open: z.boolean(),
-  total_sec: z.number().int().nonnegative(),
-  downtime_sec: z.number().int().nonnegative(),
-  unknown_sec: z.number().int().nonnegative(),
-  uptime_sec: z.number().int().nonnegative(),
-});
+function isNullableNonNegativeInteger(value: unknown): value is number | null {
+  return value === null || isNonNegativeInteger(value);
+}
+
+function isRuntimeStatusCode(value: unknown): value is MonitorRuntimeStatusCode {
+  return value === 'u' || value === 'd' || value === 'm' || value === 'p' || value === 'x';
+}
+
+function isPublicMonitorRuntimeTotalsEntry(value: unknown): value is PublicMonitorRuntimeTotalsEntry {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isPositiveInteger(value.monitor_id) &&
+    isPositiveInteger(value.interval_sec) &&
+    isNullableNonNegativeInteger(value.range_start_at) &&
+    isNonNegativeInteger(value.materialized_at) &&
+    isNullableNonNegativeInteger(value.last_checked_at) &&
+    isRuntimeStatusCode(value.last_status_code) &&
+    typeof value.last_outage_open === 'boolean' &&
+    isNonNegativeInteger(value.total_sec) &&
+    isNonNegativeInteger(value.downtime_sec) &&
+    isNonNegativeInteger(value.unknown_sec) &&
+    isNonNegativeInteger(value.uptime_sec)
+  );
+}
+
+function isPublicMonitorRuntimeTotalsSnapshot(value: unknown): value is PublicMonitorRuntimeTotalsSnapshot {
+  return (
+    isRecord(value) &&
+    value.version === MONITOR_RUNTIME_SNAPSHOT_VERSION &&
+    isNonNegativeInteger(value.generated_at) &&
+    isNonNegativeInteger(value.day_start_at) &&
+    Array.isArray(value.monitors) &&
+    value.monitors.every(isPublicMonitorRuntimeTotalsEntry)
+  );
+}
 
 const MAX_CACHED_RUNTIME_ENTRY_JSON_TEXTS = 512;
 const runtimeEntryByJsonText = new Map<string, PublicMonitorRuntimeEntry | null>();
@@ -455,12 +480,10 @@ export const publicMonitorRuntimeSnapshotSchema = z.object({
   monitors: z.array(runtimeEntrySchema),
 });
 
-export const publicMonitorRuntimeTotalsSnapshotSchema = z.object({
-  version: z.literal(MONITOR_RUNTIME_SNAPSHOT_VERSION),
-  generated_at: z.number().int().nonnegative(),
-  day_start_at: z.number().int().nonnegative(),
-  monitors: z.array(runtimeTotalsEntrySchema),
-});
+export const publicMonitorRuntimeTotalsSnapshotSchema = z.custom<PublicMonitorRuntimeTotalsSnapshot>(
+  isPublicMonitorRuntimeTotalsSnapshot,
+  'Invalid public monitor runtime totals snapshot',
+);
 
 const readRuntimeSnapshotStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 const upsertRuntimeSnapshotStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
