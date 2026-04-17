@@ -514,7 +514,7 @@ async function readRuntimeTotalsEntriesByMonitorId(opts: {
         entry.value AS monitor_json
       FROM public_snapshots
       JOIN json_each(public_snapshots.body_json, '$.monitors') AS entry
-      WHERE public_snapshots.key = ?1
+      WHERE key = ?1
         AND CAST(json_extract(entry.value, '$.monitor_id') AS INTEGER) IN (${placeholders})
       ORDER BY monitor_id
     `,
