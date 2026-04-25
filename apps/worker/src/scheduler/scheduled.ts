@@ -1349,9 +1349,10 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
       const batchesStart = performance.now();
       const batchLimit = pLimit(INTERNAL_SCHEDULED_BATCH_CONCURRENCY);
       const batchResults = await Promise.all(
-        serviceBatchRows.map((rows) =>
+        serviceBatchRows.map((rows, batchIndex) =>
           batchLimit(async () => {
             schedulerLease.assertHeld('dispatching scheduled service batch');
+            const batchStart = performance.now();
             const ids = rows.map((row) => row.id);
             const suppressedIds = ids.filter((id) => suppressedMonitorIds.has(id));
             try {
@@ -1364,7 +1365,12 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
               }, schedulerLease.signal);
             } catch (err) {
               schedulerLease.assertHeld('dispatching inline fallback for service batch');
-              console.warn('scheduled: service batch failed, falling back inline', err);
+              const firstId = ids[0] ?? null;
+              const lastId = ids[ids.length - 1] ?? null;
+              console.warn(
+                `scheduled: service batch failed, falling back inline checked_at=${checkedAt} batch_index=${batchIndex + 1} batch_count=${serviceBatchRows.length} ids=${ids.length} first_id=${firstId ?? '-'} last_id=${lastId ?? '-'} dur_service=${(performance.now() - batchStart).toFixed(2)}`,
+                err,
+              );
               const fallbackBatch = await runExclusivePersistedMonitorBatch({
                 db: env.DB,
                 ids,

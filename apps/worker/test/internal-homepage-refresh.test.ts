@@ -510,7 +510,7 @@ describe('internal homepage refresh route', () => {
     );
   });
 
-  it('falls back to full compute when no scheduled runtime updates are available', async () => {
+  it('tries runtime snapshot fast compute before full compute when no scheduled runtime updates are available', async () => {
     const now = 1_776_230_340;
     vi.spyOn(Date, 'now').mockReturnValue(now * 1000);
     const env = createEnv(now);
@@ -542,7 +542,15 @@ describe('internal homepage refresh route', () => {
     );
 
     expect(res.status).toBe(200);
-    expect(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates).not.toHaveBeenCalled();
+    expect(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        db: env.DB,
+        now,
+        baseSnapshot,
+        baseSnapshotBodyJson: null,
+        updates: [],
+      }),
+    );
     expect(computePublicHomepagePayload).toHaveBeenCalledWith(env.DB, now, {
       baseSnapshot,
       baseSnapshotBodyJson: null,
@@ -556,6 +564,48 @@ describe('internal homepage refresh route', () => {
       false,
     );
     expect(releaseLease).toHaveBeenCalledWith(env.DB, 'snapshot:homepage:refresh', now + 55);
+  });
+
+  it('uses runtime snapshot fast compute for scheduled refreshes without runtime updates', async () => {
+    const now = 1_776_230_340;
+    vi.spyOn(Date, 'now').mockReturnValue(now * 1000);
+    const env = createEnv(now);
+    const baseSnapshot = createBaseSnapshot(now);
+    const fastPayload = {
+      ...baseSnapshot,
+      generated_at: now,
+    };
+    vi.mocked(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates).mockResolvedValue(
+      fastPayload as never,
+    );
+
+    const res = await worker.fetch(
+      new Request('http://internal/api/v1/internal/refresh/homepage', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer test-admin-token',
+          'Content-Type': 'text/plain; charset=utf-8',
+          'X-Uptimer-Refresh-Source': 'scheduled',
+        },
+        body: 'test-admin-token',
+      }),
+      env,
+      { waitUntil: vi.fn() } as unknown as ExecutionContext,
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ ok: true, refreshed: true });
+    expect(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        db: env.DB,
+        now,
+        baseSnapshot,
+        baseSnapshotBodyJson: null,
+        updates: [],
+      }),
+    );
+    expect(computePublicHomepagePayload).not.toHaveBeenCalled();
+    expect(writeHomepageSnapshot).toHaveBeenCalledWith(env.DB, now, fastPayload, undefined, false);
   });
 
   it('fails closed when the homepage refresh lease is lost before snapshot writes', async () => {

@@ -668,7 +668,15 @@ describe('scheduler/scheduled regression', () => {
 
       expect(runHttpCheck).toHaveBeenCalledTimes(7);
       expect(warn).toHaveBeenCalledWith(
-        'scheduled: service batch failed, falling back inline',
+        expect.stringContaining('scheduled: service batch failed, falling back inline'),
+        expect.any(Error),
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('batch_index=2'),
+        expect.any(Error),
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining(`checked_at=${checkedAt}`),
         expect.any(Error),
       );
     } finally {
@@ -1187,7 +1195,7 @@ describe('scheduler/scheduled regression', () => {
       await Promise.all(waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
 
       expect(warn).toHaveBeenCalledWith(
-        'scheduled: service batch failed, falling back inline',
+        expect.stringContaining('scheduled: service batch failed, falling back inline'),
         expect.any(Error),
       );
       expect(dispatchWebhookToChannels).toHaveBeenCalled();

@@ -652,8 +652,12 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
           hasUpcomingMaintenance: boolean;
         }
       | undefined;
+    const tryScheduledRuntimeSnapshotRefresh =
+      scheduledRefreshRequest &&
+      baseSnapshot.snapshot !== null &&
+      (!scheduledRuntimeUpdatesRequested || useScheduledRuntimeFastPath);
     let payload =
-      useScheduledRuntimeFastPath && baseSnapshot.snapshot
+      tryScheduledRuntimeSnapshotRefresh && baseSnapshot.snapshot
         ? trace
           ? await trace.timeAsync(
               'homepage_refresh_fast_compute',
