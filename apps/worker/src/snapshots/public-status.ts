@@ -21,9 +21,36 @@ const UPSERT_STATUS_SQL = `
   WHERE excluded.generated_at >= public_snapshots.generated_at
     OR public_snapshots.generated_at > ?5
 `;
+const UPSERT_STATUS_AFTER_HOMEPAGE_SQL = `
+  INSERT INTO public_snapshots (key, generated_at, body_json, updated_at)
+  SELECT ?1, ?2, ?3, ?4
+  WHERE EXISTS (
+    SELECT 1
+    FROM public_snapshots homepage_snapshot
+    WHERE homepage_snapshot.key = ?6
+      AND homepage_snapshot.generated_at = ?7
+      AND homepage_snapshot.updated_at = ?8
+  )
+  ON CONFLICT(key) DO UPDATE SET
+    generated_at = excluded.generated_at,
+    body_json = excluded.body_json,
+    updated_at = excluded.updated_at
+  WHERE (
+      excluded.generated_at >= public_snapshots.generated_at
+      OR public_snapshots.generated_at > ?5
+    )
+    AND EXISTS (
+      SELECT 1
+      FROM public_snapshots homepage_snapshot
+      WHERE homepage_snapshot.key = ?6
+        AND homepage_snapshot.generated_at = ?7
+        AND homepage_snapshot.updated_at = ?8
+    )
+`;
 
 const readStatusStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 const upsertStatusStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
+const upsertStatusAfterHomepageStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 
 function withTraceSync<T>(trace: Trace | undefined, name: string, fn: () => T): T {
   return trace ? trace.time(name, fn) : fn();
@@ -149,34 +176,106 @@ export async function writeStatusSnapshot(
   payload: PublicStatusResponse,
   trace?: Trace,
 ): Promise<void> {
-  const bodyJson = withTraceSync(trace, 'status_write_stringify', () => JSON.stringify(payload));
+  const prepared = prepareStatusSnapshotWrite({ db, now, payload, ...(trace ? { trace } : {}) });
+  prepared.prime();
+  await withTraceAsync(
+    trace,
+    'status_write_run',
+    async () => await prepared.statement.run(),
+  );
+}
+
+export type PreparedStatusSnapshotWrite = {
+  statement: D1PreparedStatement;
+  prime: () => void;
+};
+
+function bindStatusSnapshotUpsert(
+  db: D1Database,
+  now: number,
+  bodyJson: string,
+  generatedAt: number,
+): D1PreparedStatement {
   const cached = upsertStatusStatementByDb.get(db);
   const statement = cached ?? db.prepare(UPSERT_STATUS_SQL);
   if (!cached) {
     upsertStatusStatementByDb.set(db, statement);
   }
 
-  primeStatusSnapshotCache({
-    db,
-    generatedAt: payload.generated_at,
-    updatedAt: now,
+  return statement.bind(
+    SNAPSHOT_KEY,
+    generatedAt,
     bodyJson,
-    data: payload,
-  });
-  await withTraceAsync(
-    trace,
-    'status_write_run',
-    async () =>
-      await statement
-        .bind(
-          SNAPSHOT_KEY,
-          payload.generated_at,
-          bodyJson,
-          now,
-          now + FUTURE_SNAPSHOT_TOLERANCE_SECONDS,
-        )
-        .run(),
+    now,
+    now + FUTURE_SNAPSHOT_TOLERANCE_SECONDS,
   );
+}
+
+function bindStatusSnapshotAfterHomepageUpsert(opts: {
+  db: D1Database;
+  now: number;
+  bodyJson: string;
+  generatedAt: number;
+  homepageSnapshotKey: string;
+  homepageGeneratedAt: number;
+  homepageUpdatedAt: number;
+}): D1PreparedStatement {
+  const cached = upsertStatusAfterHomepageStatementByDb.get(opts.db);
+  const statement = cached ?? opts.db.prepare(UPSERT_STATUS_AFTER_HOMEPAGE_SQL);
+  if (!cached) {
+    upsertStatusAfterHomepageStatementByDb.set(opts.db, statement);
+  }
+
+  return statement.bind(
+    SNAPSHOT_KEY,
+    opts.generatedAt,
+    opts.bodyJson,
+    opts.now,
+    opts.now + FUTURE_SNAPSHOT_TOLERANCE_SECONDS,
+    opts.homepageSnapshotKey,
+    opts.homepageGeneratedAt,
+    opts.homepageUpdatedAt,
+  );
+}
+
+export function prepareStatusSnapshotWrite(opts: {
+  db: D1Database;
+  now: number;
+  payload: PublicStatusResponse;
+  trace?: Trace;
+  afterHomepage?: {
+    key: string;
+    generatedAt: number;
+    updatedAt: number;
+  };
+}): PreparedStatusSnapshotWrite {
+  const bodyJson = withTraceSync(opts.trace, 'status_write_stringify', () =>
+    JSON.stringify(opts.payload),
+  );
+  const statement = opts.afterHomepage
+    ? bindStatusSnapshotAfterHomepageUpsert({
+        db: opts.db,
+        now: opts.now,
+        bodyJson,
+        generatedAt: opts.payload.generated_at,
+        homepageSnapshotKey: opts.afterHomepage.key,
+        homepageGeneratedAt: opts.afterHomepage.generatedAt,
+        homepageUpdatedAt: opts.afterHomepage.updatedAt,
+      })
+    : bindStatusSnapshotUpsert(opts.db, opts.now, bodyJson, opts.payload.generated_at);
+
+  return {
+    statement,
+    prime: () => {
+      primeStatusSnapshotCache({
+        db: opts.db,
+        generatedAt: opts.payload.generated_at,
+        updatedAt: opts.now,
+        bodyJson,
+        data: opts.payload,
+      });
+    },
+  };
 }
 
 export function applyStatusCacheHeaders(res: Response, ageSeconds: number): void {

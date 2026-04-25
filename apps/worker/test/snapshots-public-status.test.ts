@@ -9,6 +9,7 @@ import {
   readStatusSnapshotJson,
   toSnapshotPayload,
   writeStatusSnapshot,
+  prepareStatusSnapshotWrite,
 } from '../src/snapshots/public-status';
 import {
   readStatusSnapshotJson as readStatusSnapshotJsonFastPath,
@@ -238,6 +239,44 @@ describe('snapshots/public-status', () => {
     await writeStatusSnapshot(db, now, payload);
 
     expect(boundArgs).toEqual(['status', 280, JSON.stringify(payload), now, now + 60]);
+  });
+
+  it('prepares conditional status writes tied to the homepage artifact write', async () => {
+    let boundArgs: unknown[] | null = null;
+    const db = createFakeD1Database([
+      {
+        match: 'insert into public_snapshots',
+        run: (args) => {
+          boundArgs = args;
+          return { meta: { changes: 1 } };
+        },
+      },
+    ]);
+
+    const now = 300;
+    const payload = samplePayload(280);
+    const prepared = prepareStatusSnapshotWrite({
+      db,
+      now,
+      payload,
+      afterHomepage: {
+        key: 'homepage:artifact',
+        generatedAt: 280,
+        updatedAt: now,
+      },
+    });
+    await prepared.statement.run();
+
+    expect(boundArgs).toEqual([
+      'status',
+      280,
+      JSON.stringify(payload),
+      now,
+      now + 60,
+      'homepage:artifact',
+      280,
+      now,
+    ]);
   });
 
   it('does not let an older status snapshot overwrite a newer one', async () => {

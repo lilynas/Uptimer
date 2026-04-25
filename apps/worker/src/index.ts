@@ -752,39 +752,6 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
           snapshotMod.toHomepageSnapshotPayload(payload),
         )
       : snapshotMod.toHomepageSnapshotPayload(payload);
-    homepageRefreshLease.assertHeld('writing homepage snapshot');
-    const homepageSnapshotWritten = trace
-      ? await trace.timeAsync(
-          'homepage_refresh_write',
-          async () =>
-            await snapshotMod.writeHomepageSnapshot(
-              env.DB,
-              now,
-              payload,
-              trace,
-              baseSnapshot.seedDataSnapshot,
-            ),
-        )
-      : await snapshotMod.writeHomepageSnapshot(
-          env.DB,
-          now,
-          payload,
-          undefined,
-          baseSnapshot.seedDataSnapshot,
-        );
-    if (!homepageSnapshotWritten) {
-      if (trace?.enabled) {
-        trace.setLabel('skip', 'homepage_write_noop');
-      }
-      return finalizeInternalRefreshResponse(
-        buildInternalRefreshResponse(true, false),
-        trace,
-        traceMod,
-        { refreshed: false },
-      );
-    }
-
-    homepageRefreshLease.assertHeld('writing status snapshot');
     const statusRefreshArgs = statusFastGuardState
       ? {
           db: env.DB,
@@ -804,17 +771,58 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
             await statusMod.tryComputePublicStatusPayloadFromScheduledRuntimeUpdates(statusRefreshArgs),
         )
       : await statusMod.tryComputePublicStatusPayloadFromScheduledRuntimeUpdates(statusRefreshArgs);
-    if (refreshedStatusPayload) {
-      homepageRefreshLease.assertHeld('writing status snapshot');
-      if (trace) {
-        await trace.timeAsync(
-          'status_refresh_write',
+
+    homepageRefreshLease.assertHeld('writing homepage snapshot');
+    const preparedHomepageWrite = snapshotMod.prepareHomepageSnapshotWrite(
+      env.DB,
+      now,
+      payload,
+      trace ?? undefined,
+      baseSnapshot.seedDataSnapshot,
+    );
+    const preparedStatusWrite = refreshedStatusPayload
+      ? statusSnapshotMod.prepareStatusSnapshotWrite({
+          db: env.DB,
+          now,
+          payload: refreshedStatusPayload,
+          ...(trace ? { trace } : {}),
+          afterHomepage: {
+            key: snapshotMod.getHomepageSnapshotArtifactKey(),
+            generatedAt: preparedHomepageWrite.generatedAt,
+            updatedAt: now,
+          },
+        })
+      : null;
+    const writeResults = trace
+      ? await trace.timeAsync(
+          preparedStatusWrite ? 'snapshot_writes_batch' : 'homepage_refresh_write',
           async () =>
-            await statusSnapshotMod.writeStatusSnapshot(env.DB, now, refreshedStatusPayload, trace),
-        );
-      } else {
-        await statusSnapshotMod.writeStatusSnapshot(env.DB, now, refreshedStatusPayload);
+            preparedStatusWrite
+              ? await env.DB.batch([preparedHomepageWrite.statement, preparedStatusWrite.statement])
+              : [await preparedHomepageWrite.statement.run()],
+        )
+      : preparedStatusWrite
+        ? await env.DB.batch([preparedHomepageWrite.statement, preparedStatusWrite.statement])
+        : [await preparedHomepageWrite.statement.run()];
+    const homepageWriteResult = writeResults[0];
+    if (!homepageWriteResult) {
+      throw new Error('homepage snapshot write returned no result');
+    }
+    const homepageSnapshotWritten = snapshotMod.didApplyHomepageSnapshotWrite(homepageWriteResult);
+    if (!homepageSnapshotWritten) {
+      if (trace?.enabled) {
+        trace.setLabel('skip', 'homepage_write_noop');
       }
+      return finalizeInternalRefreshResponse(
+        buildInternalRefreshResponse(true, false),
+        trace,
+        traceMod,
+        { refreshed: false },
+      );
+    }
+    preparedHomepageWrite.prime();
+    if (refreshedStatusPayload) {
+      preparedStatusWrite?.prime();
       trace?.setLabel('status_refresh', 'patched');
     } else {
       trace?.setLabel('status_refresh', 'skipped');

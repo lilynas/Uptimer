@@ -589,6 +589,10 @@ export function getHomepageSnapshotKey() {
   return SNAPSHOT_KEY;
 }
 
+export function getHomepageSnapshotArtifactKey() {
+  return SNAPSHOT_ARTIFACT_KEY;
+}
+
 export function getHomepageSnapshotMaxAgeSeconds() {
   return MAX_AGE_SECONDS;
 }
@@ -797,6 +801,12 @@ function didApplySnapshotWrite(
   return true;
 }
 
+export function didApplyHomepageSnapshotWrite(
+  result: Awaited<ReturnType<D1PreparedStatement['run']>>,
+): boolean {
+  return didApplySnapshotWrite(result);
+}
+
 async function releaseRefreshLease(
   db: D1Database,
   trace: Trace | undefined,
@@ -820,13 +830,19 @@ async function releaseRefreshLease(
 
 type HomepageRefreshLeaseGuard = Pick<ReturnType<typeof startRenewableLease>, 'assertHeld'>;
 
-export async function writeHomepageSnapshot(
+export type PreparedHomepageSnapshotWrite = {
+  statement: D1PreparedStatement;
+  generatedAt: number;
+  prime: () => void;
+};
+
+export function prepareHomepageSnapshotWrite(
   db: D1Database,
   now: number,
   payload: PublicHomepageResponse,
   trace?: Trace,
   _seedDataSnapshot = false,
-): Promise<boolean> {
+): PreparedHomepageSnapshotWrite {
   const payloadBodyJson = withTraceSync(trace, 'homepage_write_stringify_payload', () =>
     JSON.stringify(payload),
   );
@@ -837,29 +853,47 @@ export async function writeHomepageSnapshot(
     JSON.stringify(render),
   );
 
-  const writeResult = await withTraceAsync(trace, 'homepage_write_artifact_run', async () =>
-    await homepageSnapshotUpsertStatement(
+  return {
+    statement: homepageSnapshotUpsertStatement(
       db,
       SNAPSHOT_ARTIFACT_KEY,
       render.generated_at,
       renderBodyJson,
       now,
       now + FUTURE_SNAPSHOT_TOLERANCE_SECONDS,
-    ).run(),
+    ),
+    generatedAt: render.generated_at,
+    prime: () => {
+      primeHomepageRefreshBaseSnapshotCache({
+        db,
+        generatedAt: render.generated_at,
+        updatedAt: now,
+        snapshot: payload,
+        renderBodyJson,
+        payloadBodyJson,
+      });
+    },
+  };
+}
+
+export async function writeHomepageSnapshot(
+  db: D1Database,
+  now: number,
+  payload: PublicHomepageResponse,
+  trace?: Trace,
+  seedDataSnapshot = false,
+): Promise<boolean> {
+  const prepared = prepareHomepageSnapshotWrite(db, now, payload, trace, seedDataSnapshot);
+
+  const writeResult = await withTraceAsync(trace, 'homepage_write_artifact_run', async () =>
+    await prepared.statement.run(),
   );
   const wrote = didApplySnapshotWrite(writeResult);
   if (!wrote) {
     return false;
   }
 
-  primeHomepageRefreshBaseSnapshotCache({
-    db,
-    generatedAt: render.generated_at,
-    updatedAt: now,
-    snapshot: payload,
-    renderBodyJson,
-    payloadBodyJson,
-  });
+  prepared.prime();
   return true;
 }
 

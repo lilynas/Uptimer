@@ -15,9 +15,13 @@ vi.mock('../src/public/status-refresh', () => ({
 vi.mock('../src/snapshots/public-homepage', () => ({
   toHomepageSnapshotPayload: vi.fn((value) => value),
   writeHomepageSnapshot: vi.fn(),
+  prepareHomepageSnapshotWrite: vi.fn(),
+  didApplyHomepageSnapshotWrite: vi.fn(),
+  getHomepageSnapshotArtifactKey: vi.fn(() => 'homepage:artifact'),
 }));
 vi.mock('../src/snapshots/public-status', () => ({
   writeStatusSnapshot: vi.fn(),
+  prepareStatusSnapshotWrite: vi.fn(),
 }));
 
 import type { Env } from '../src/env';
@@ -28,8 +32,13 @@ import {
 } from '../src/public/homepage';
 import { tryComputePublicStatusPayloadFromScheduledRuntimeUpdates } from '../src/public/status-refresh';
 import { acquireLease, releaseLease, renewLease } from '../src/scheduler/lock';
-import { toHomepageSnapshotPayload, writeHomepageSnapshot } from '../src/snapshots/public-homepage';
-import { writeStatusSnapshot } from '../src/snapshots/public-status';
+import {
+  didApplyHomepageSnapshotWrite,
+  prepareHomepageSnapshotWrite,
+  toHomepageSnapshotPayload,
+  writeHomepageSnapshot,
+} from '../src/snapshots/public-homepage';
+import { prepareStatusSnapshotWrite } from '../src/snapshots/public-status';
 import { createFakeD1Database } from './helpers/fake-d1';
 
 function createBaseSnapshot(now: number) {
@@ -124,6 +133,8 @@ function createEnv(now: number): Env {
 
 describe('internal homepage refresh route', () => {
   let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+  let homepageWritePrime: ReturnType<typeof vi.fn>;
+  let statusWritePrime: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -132,6 +143,22 @@ describe('internal homepage refresh route', () => {
     vi.mocked(releaseLease).mockResolvedValue(undefined);
     vi.mocked(renewLease).mockResolvedValue(true);
     vi.mocked(writeHomepageSnapshot).mockResolvedValue(true as never);
+    homepageWritePrime = vi.fn();
+    statusWritePrime = vi.fn();
+    vi.mocked(prepareHomepageSnapshotWrite).mockReturnValue({
+      statement: {
+        run: vi.fn(async () => ({ meta: { changes: 1 } })),
+      } as unknown as D1PreparedStatement,
+      generatedAt: 1_776_230_340,
+      prime: homepageWritePrime,
+    });
+    vi.mocked(didApplyHomepageSnapshotWrite).mockReturnValue(true);
+    vi.mocked(prepareStatusSnapshotWrite).mockReturnValue({
+      statement: {
+        run: vi.fn(async () => ({ meta: { changes: 1 } })),
+      } as unknown as D1PreparedStatement,
+      prime: statusWritePrime,
+    });
     vi.mocked(tryComputePublicStatusPayloadFromScheduledRuntimeUpdates).mockResolvedValue(
       null as never,
     );
@@ -186,7 +213,14 @@ describe('internal homepage refresh route', () => {
     expect(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates).toHaveBeenCalledTimes(1);
     expect(computePublicHomepagePayload).not.toHaveBeenCalled();
     expect(toHomepageSnapshotPayload).toHaveBeenCalledWith(fastPayload);
-    expect(writeHomepageSnapshot).toHaveBeenCalledWith(env.DB, now, fastPayload, undefined, false);
+    expect(prepareHomepageSnapshotWrite).toHaveBeenCalledWith(
+      env.DB,
+      now,
+      fastPayload,
+      undefined,
+      false,
+    );
+    expect(homepageWritePrime).toHaveBeenCalledTimes(1);
     expect(tryComputePublicStatusPayloadFromScheduledRuntimeUpdates).toHaveBeenCalledWith({
       db: env.DB,
       now,
@@ -202,7 +236,7 @@ describe('internal homepage refresh route', () => {
         },
       ],
     });
-    expect(writeStatusSnapshot).not.toHaveBeenCalled();
+    expect(prepareStatusSnapshotWrite).not.toHaveBeenCalled();
     expect(releaseLease).toHaveBeenCalledWith(env.DB, 'snapshot:homepage:refresh', now + 55);
     expect(
       vi.mocked(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates),
@@ -288,7 +322,17 @@ describe('internal homepage refresh route', () => {
     );
 
     expect(res.status).toBe(200);
-    expect(writeStatusSnapshot).toHaveBeenCalledWith(env.DB, now, statusPayload);
+    expect(prepareStatusSnapshotWrite).toHaveBeenCalledWith({
+      db: env.DB,
+      now,
+      payload: statusPayload,
+      afterHomepage: {
+        key: 'homepage:artifact',
+        generatedAt: 1_776_230_340,
+        updatedAt: now,
+      },
+    });
+    expect(statusWritePrime).toHaveBeenCalledTimes(1);
   });
 
   it('does not skip scheduled runtime updates when the base snapshot was already refreshed this minute', async () => {
@@ -391,7 +435,13 @@ describe('internal homepage refresh route', () => {
     await expect(res.json()).resolves.toMatchObject({ ok: true, refreshed: true });
     expect(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates).toHaveBeenCalledTimes(1);
     expect(computePublicHomepagePayload).not.toHaveBeenCalled();
-    expect(writeHomepageSnapshot).toHaveBeenCalledWith(env.DB, now, fastPayload, undefined, false);
+    expect(prepareHomepageSnapshotWrite).toHaveBeenCalledWith(
+      env.DB,
+      now,
+      fastPayload,
+      undefined,
+      false,
+    );
   });
 
   it('skips a scheduled refresh without runtime updates when the snapshot is fresh this minute', async () => {
@@ -453,7 +503,7 @@ describe('internal homepage refresh route', () => {
     expect(acquireLease).not.toHaveBeenCalled();
     expect(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates).not.toHaveBeenCalled();
     expect(computePublicHomepagePayload).not.toHaveBeenCalled();
-    expect(writeHomepageSnapshot).not.toHaveBeenCalled();
+    expect(prepareHomepageSnapshotWrite).not.toHaveBeenCalled();
   });
 
   it('normalizes privileged runtime update latency values before fast-path compute', async () => {
@@ -556,7 +606,7 @@ describe('internal homepage refresh route', () => {
       baseSnapshotBodyJson: null,
     });
     expect(toHomepageSnapshotPayload).toHaveBeenCalledWith(computedPayload);
-    expect(writeHomepageSnapshot).toHaveBeenCalledWith(
+    expect(prepareHomepageSnapshotWrite).toHaveBeenCalledWith(
       env.DB,
       now,
       computedPayload,
@@ -605,7 +655,13 @@ describe('internal homepage refresh route', () => {
       }),
     );
     expect(computePublicHomepagePayload).not.toHaveBeenCalled();
-    expect(writeHomepageSnapshot).toHaveBeenCalledWith(env.DB, now, fastPayload, undefined, false);
+    expect(prepareHomepageSnapshotWrite).toHaveBeenCalledWith(
+      env.DB,
+      now,
+      fastPayload,
+      undefined,
+      false,
+    );
   });
 
   it('fails closed when the homepage refresh lease is lost before snapshot writes', async () => {
@@ -654,8 +710,8 @@ describe('internal homepage refresh route', () => {
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ ok: true, refreshed: false });
-    expect(writeHomepageSnapshot).not.toHaveBeenCalled();
-    expect(writeStatusSnapshot).not.toHaveBeenCalled();
+    expect(prepareHomepageSnapshotWrite).not.toHaveBeenCalled();
+    expect(prepareStatusSnapshotWrite).not.toHaveBeenCalled();
   });
 
   it('returns refreshed=false and skips status writes when the homepage snapshot write is a no-op', async () => {
@@ -669,7 +725,7 @@ describe('internal homepage refresh route', () => {
         generated_at: now,
       } as never,
     );
-    vi.mocked(writeHomepageSnapshot).mockResolvedValue(false as never);
+    vi.mocked(didApplyHomepageSnapshotWrite).mockReturnValue(false);
 
     const res = await worker.fetch(
       new Request('http://internal/api/v1/internal/refresh/homepage', {
@@ -690,8 +746,8 @@ describe('internal homepage refresh route', () => {
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ ok: true, refreshed: false });
-    expect(writeHomepageSnapshot).toHaveBeenCalledTimes(1);
-    expect(writeStatusSnapshot).not.toHaveBeenCalled();
+    expect(prepareHomepageSnapshotWrite).toHaveBeenCalledTimes(1);
+    expect(prepareStatusSnapshotWrite).not.toHaveBeenCalled();
   });
 
   it('drops stale scheduled runtime updates before attempting the fast path', async () => {
@@ -912,7 +968,7 @@ describe('internal homepage refresh route', () => {
     expect(acquireLease).toHaveBeenCalledTimes(1);
     expect(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates).not.toHaveBeenCalled();
     expect(computePublicHomepagePayload).toHaveBeenCalledTimes(1);
-    expect(writeHomepageSnapshot).toHaveBeenCalledTimes(1);
+    expect(prepareHomepageSnapshotWrite).toHaveBeenCalledTimes(1);
   });
 
   it('fails closed when only monitor_state is available and the timestamp is ambiguous', async () => {
