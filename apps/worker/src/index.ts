@@ -402,11 +402,13 @@ function finalizeInternalRefreshResponse(
   }
 
   trace.finish('total');
-  traceMod.applyTraceToResponse({ res, trace, prefix: 'w' });
+  const traceInfo = trace.toInfoHeader();
+  const serverTiming = trace.toServerTiming('w');
+  traceMod.applyTraceToResponse({ res, trace, prefix: 'w', info: traceInfo, serverTiming });
   console.log(
     info.error
-      ? `internal-refresh: id=${trace.id} failed=1 timing=${trace.toServerTiming('w')} info=${trace.toInfoHeader()}`
-      : `internal-refresh: id=${trace.id} refreshed=${info.refreshed} timing=${trace.toServerTiming('w')} info=${trace.toInfoHeader()}`,
+      ? `internal-refresh: id=${trace.id} failed=1 timing=${serverTiming} info=${traceInfo}`
+      : `internal-refresh: id=${trace.id} refreshed=${info.refreshed} timing=${serverTiming} info=${traceInfo}`,
   );
   return res;
 }
@@ -429,11 +431,13 @@ function finalizeInternalCheckBatchResponse(
   }
 
   trace.finish('total');
-  traceMod.applyTraceToResponse({ res, trace, prefix: 'w' });
+  const traceInfo = trace.toInfoHeader();
+  const serverTiming = trace.toServerTiming('w');
+  traceMod.applyTraceToResponse({ res, trace, prefix: 'w', info: traceInfo, serverTiming });
   console.log(
     info.error
-      ? `internal-check-batch: id=${trace.id} failed=1 timing=${trace.toServerTiming('w')} info=${trace.toInfoHeader()}`
-      : `internal-check-batch: id=${trace.id} ok=${info.ok} timing=${trace.toServerTiming('w')} info=${trace.toInfoHeader()}`,
+      ? `internal-check-batch: id=${trace.id} failed=1 timing=${serverTiming} info=${traceInfo}`
+      : `internal-check-batch: id=${trace.id} ok=${info.ok} timing=${serverTiming} info=${traceInfo}`,
   );
   return res;
 }

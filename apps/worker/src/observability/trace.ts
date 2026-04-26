@@ -157,16 +157,18 @@ export function applyTraceToResponse(opts: {
   res: Response;
   trace: Trace;
   prefix?: string;
+  info?: string;
+  serverTiming?: string;
 }): void {
   if (!opts.trace.enabled) return;
   opts.res.headers.set(TRACE_ID_HEADER, opts.trace.id);
 
-  const info = opts.trace.toInfoHeader();
+  const info = opts.info ?? opts.trace.toInfoHeader();
   if (info) {
     const existing = opts.res.headers.get(TRACE_INFO_HEADER);
     opts.res.headers.set(TRACE_INFO_HEADER, existing ? `${existing};${info}` : info);
   }
 
-  const serverTiming = opts.trace.toServerTiming(opts.prefix);
+  const serverTiming = opts.serverTiming ?? opts.trace.toServerTiming(opts.prefix);
   appendServerTimingHeader(opts.res, serverTiming);
 }
