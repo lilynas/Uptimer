@@ -178,7 +178,7 @@ describe('public hot routes', () => {
     expect(writes).toBe(1);
   });
 
-  it('falls back to a bounded stale status snapshot when live compute fails', async () => {
+  it('serves a bounded stale status snapshot before trying live compute', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(200_000);
     const stale = sampleStatusPayload(100);
     computePublicStatusPayload.mockRejectedValue(new Error('boom'));
@@ -203,7 +203,7 @@ describe('public hot routes', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(stale);
-    expect(computePublicStatusPayload).toHaveBeenCalledOnce();
+    expect(computePublicStatusPayload).not.toHaveBeenCalled();
     expect(pending.length).toBe(0);
   });
 

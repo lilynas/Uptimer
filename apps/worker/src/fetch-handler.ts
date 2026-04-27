@@ -238,6 +238,7 @@ const HOT_PUBLIC_CACHED_AT_HEADER = 'X-Uptimer-Hot-Cached-At';
 const HOT_PUBLIC_ORIGINAL_CACHE_CONTROL_HEADER = 'X-Uptimer-Hot-Original-Cache-Control';
 const HOT_PUBLIC_STALE_MAX_AGE_SECONDS = 60;
 const HOT_PUBLIC_STALE_STORAGE_TTL_SECONDS = 120;
+const PUBLIC_STATIC_STALE_MAX_SECONDS = 10 * 60;
 const HOT_PUBLIC_CACHE_PATHS = new Set([
   '/api/v1/public/homepage',
   '/api/v1/public/homepage-artifact',
@@ -467,7 +468,7 @@ async function handlePublicHomepageArtifact(req: Request, env: Env): Promise<Res
 }
 
 async function handlePublicHomepage(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  const { applyHomepageCacheHeaders, readHomepageSnapshotJson } = await import(
+  const { applyHomepageCacheHeaders, readHomepageSnapshotJsonAnyAge } = await import(
     './snapshots/public-homepage-read'
   );
   const now = Math.floor(Date.now() / 1000);
@@ -479,9 +480,9 @@ async function handlePublicHomepage(req: Request, env: Env, ctx: ExecutionContex
   const snapshot = trace
     ? await trace.timeAsync(
         'homepage_snapshot_read',
-        () => readHomepageSnapshotJson(env.DB, now),
+        () => readHomepageSnapshotJsonAnyAge(env.DB, now, PUBLIC_STATIC_STALE_MAX_SECONDS),
       )
-    : await readHomepageSnapshotJson(env.DB, now);
+    : await readHomepageSnapshotJsonAnyAge(env.DB, now, PUBLIC_STATIC_STALE_MAX_SECONDS);
   if (snapshot) {
     const res = new Response(snapshot.bodyJson, {
       status: 200,
@@ -489,7 +490,7 @@ async function handlePublicHomepage(req: Request, env: Env, ctx: ExecutionContex
     });
     applyHomepageCacheHeaders(res, Math.min(60, snapshot.age));
     if (trace) {
-      trace.setLabel('path', 'snapshot');
+      trace.setLabel('path', snapshot.age > 60 ? 'stale_snapshot' : 'snapshot');
       trace.setLabel('age', snapshot.age);
       trace.finish('total');
       await applyTrace(res, trace, 'w');
@@ -502,7 +503,7 @@ async function handlePublicHomepage(req: Request, env: Env, ctx: ExecutionContex
 }
 
 async function handlePublicStatus(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  const { applyStatusCacheHeaders, readStatusSnapshotJson, readStaleStatusSnapshotJson } =
+  const { applyStatusCacheHeaders, readStaleStatusSnapshotJson } =
     await import('./snapshots/public-status-read');
   const now = Math.floor(Date.now() / 1000);
   const includeHiddenMonitors = hasValidAdminToken(req, env);
@@ -544,9 +545,9 @@ async function handlePublicStatus(req: Request, env: Env, ctx: ExecutionContext)
   const snapshot = trace
     ? await trace.timeAsync(
         'status_snapshot_read',
-        () => readStatusSnapshotJson(env.DB, now),
+        () => readStaleStatusSnapshotJson(env.DB, now, PUBLIC_STATIC_STALE_MAX_SECONDS),
       )
-    : await readStatusSnapshotJson(env.DB, now);
+    : await readStaleStatusSnapshotJson(env.DB, now, PUBLIC_STATIC_STALE_MAX_SECONDS);
   if (snapshot) {
     const res = shouldBypassSharedCaching
       ? applyPrivateNoStore(
@@ -563,10 +564,14 @@ async function handlePublicStatus(req: Request, env: Env, ctx: ExecutionContext)
           }),
         );
     if (!shouldBypassSharedCaching) {
-      applyStatusCacheHeaders(res, snapshot.age);
+      applyStatusCacheHeaders(res, Math.min(60, snapshot.age));
     }
     if (trace) {
-      trace.setLabel('path', shouldBypassSharedCaching ? 'snapshot_private' : 'snapshot');
+      const snapshotPath = snapshot.age > 60 ? 'stale_snapshot' : 'snapshot';
+      trace.setLabel(
+        'path',
+        shouldBypassSharedCaching ? `${snapshotPath}_private` : snapshotPath,
+      );
       trace.setLabel('age', snapshot.age);
       trace.finish('total');
       await applyTrace(res, trace, 'w');

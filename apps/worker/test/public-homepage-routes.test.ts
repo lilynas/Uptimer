@@ -169,6 +169,29 @@ describe('public homepage route', () => {
     expect(await res.json()).toEqual(payload);
   });
 
+  it('serves a bounded stale homepage snapshot before falling back to live compute', async () => {
+    const payload = samplePayload(100);
+    vi.spyOn(Date, 'now').mockReturnValue(200_000);
+
+    const res = await requestHomepageViaApp('/api/v1/public/homepage', [
+      {
+        match: 'from public_snapshots',
+        first: (args) =>
+          args[0] === 'homepage'
+            ? {
+                generated_at: payload.generated_at,
+                updated_at: payload.generated_at,
+                body_json: JSON.stringify(payload),
+              }
+            : null,
+      },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toContain('max-age=0');
+    expect(await res.json()).toEqual(payload);
+  });
+
   it('serves homepage render artifacts from the artifact snapshot row', async () => {
     const payload = samplePayload(190);
     const render = {
