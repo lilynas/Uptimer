@@ -114,6 +114,17 @@ describe('snapshots/public-homepage', () => {
     expect(getHomepageSnapshotMaxStaleSeconds()).toBe(600);
   });
 
+  it('builds compact render artifacts with an embedded snapshot object', () => {
+    const payload = samplePayload(190);
+    const artifact = buildHomepageRenderArtifact(payload);
+
+    expect('snapshot' in artifact).toBe(true);
+    expect('snapshot_json' in artifact).toBe(false);
+    if ('snapshot' in artifact) {
+      expect(artifact.snapshot).toEqual(payload);
+    }
+  });
+
   it('reads fresh and bounded-stale homepage snapshots without live compute', async () => {
     const payload = samplePayload(190);
     const storedRender = buildHomepageRenderArtifact(payload);

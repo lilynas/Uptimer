@@ -376,17 +376,12 @@ function renderPreload(
 
 export function buildHomepageRenderArtifact(
   snapshot: PublicHomepageResponse,
-  snapshotBodyJson?: string,
 ): StoredPublicHomepageRenderArtifact {
   const fullSnapshot: PublicHomepageResponse = {
     ...snapshot,
     bootstrap_mode: 'full',
     monitor_count_total: snapshot.monitors.length,
   };
-  const canReuseSnapshotBodyJson =
-    snapshotBodyJson !== undefined &&
-    snapshot.bootstrap_mode === 'full' &&
-    snapshot.monitor_count_total === snapshot.monitors.length;
   const needsMonitorNames =
     fullSnapshot.maintenance_windows.active.length > 0 ||
     fullSnapshot.maintenance_windows.upcoming.length > 0 ||
@@ -406,7 +401,7 @@ export function buildHomepageRenderArtifact(
   return {
     generated_at: fullSnapshot.generated_at,
     preload_html: `<div id="uptimer-preload">${renderPreload(fullSnapshot, allMonitorNames)}</div>`,
-    snapshot_json: canReuseSnapshotBodyJson ? snapshotBodyJson : JSON.stringify(fullSnapshot),
+    snapshot: fullSnapshot,
     meta_title: metaTitle,
     meta_description: metaDescription,
   };
@@ -895,18 +890,18 @@ export function prepareHomepageSnapshotWrite(
   },
   writePayloadSnapshot = false,
 ): PreparedHomepageSnapshotWrite {
-  const payloadBodyJson = withTraceSync(trace, 'homepage_write_stringify_payload', () =>
-    JSON.stringify(payload),
-  );
+  const payloadBodyJson = writePayloadSnapshot
+    ? withTraceSync(trace, 'homepage_write_stringify_payload', () => JSON.stringify(payload))
+    : null;
   const render = withTraceSync(trace, 'homepage_write_render', () =>
-    buildHomepageRenderArtifact(payload, payloadBodyJson),
+    buildHomepageRenderArtifact(payload),
   );
   const renderBodyJson = withTraceSync(trace, 'homepage_write_stringify_artifact', () =>
     JSON.stringify(render),
   );
   if (trace?.enabled) {
     trace.setLabel('homepage_payload_monitors', payload.monitors.length);
-    trace.setLabel('homepage_payload_bytes', payloadBodyJson.length);
+    trace.setLabel('homepage_payload_bytes', payloadBodyJson?.length ?? 0);
     trace.setLabel('homepage_artifact_bytes', renderBodyJson.length);
   }
 
@@ -926,7 +921,7 @@ export function prepareHomepageSnapshotWrite(
             db,
             SNAPSHOT_KEY,
             render.generated_at,
-            payloadBodyJson,
+            payloadBodyJson ?? '',
             now,
             now + FUTURE_SNAPSHOT_TOLERANCE_SECONDS,
             lease,
