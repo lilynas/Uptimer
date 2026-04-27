@@ -6,9 +6,13 @@ import {
   buildStatusMonitorFragmentWrites,
   HOMEPAGE_MONITOR_FRAGMENTS_KEY,
   MONITOR_RUNTIME_UPDATE_FRAGMENTS_KEY,
+  parseMonitorRuntimeUpdateFragmentRows,
+  parsePublicMonitorFragmentKey,
+  readMonitorRuntimeUpdateFragments,
   STATUS_MONITOR_FRAGMENTS_KEY,
   toPublicMonitorFragmentKey,
 } from '../src/snapshots/public-monitor-fragments';
+import { createFakeD1Database } from './helpers/fake-d1';
 
 function statusMonitor(id: number) {
   return {
@@ -221,8 +225,77 @@ describe('snapshots/public-monitor-fragments', () => {
     ]);
   });
 
+  it('reads valid compact runtime update fragments and reports skipped rows', async () => {
+    const rows = [
+      {
+        fragment_key: 'monitor:2',
+        generated_at: 1_700_000_060,
+        body_json: '[2,60,1699999000,1700000060,"up","up",44]',
+        updated_at: 1_700_000_065,
+      },
+      {
+        fragment_key: 'monitor:1',
+        generated_at: 1_700_000_000,
+        body_json: '[1,60,1699999000,1700000000,"down","down",null]',
+        updated_at: 1_700_000_005,
+      },
+      {
+        fragment_key: 'monitor:1',
+        generated_at: 1_700_000_060,
+        body_json: '[1,60,1699999000,1700000060,"up","up",42]',
+        updated_at: 1_700_000_065,
+      },
+      {
+        fragment_key: 'monitor:bad',
+        generated_at: 1_700_000_060,
+        body_json: '[3,60,1699999000,1700000060,"up","up",42]',
+        updated_at: 1_700_000_065,
+      },
+      {
+        fragment_key: 'monitor:4',
+        generated_at: 1_699_999_000,
+        body_json: '[4,60,1699999000,1699999000,"up","up",42]',
+        updated_at: 1_700_000_065,
+      },
+    ];
+
+    const parsed = parseMonitorRuntimeUpdateFragmentRows(rows, {
+      minGeneratedAt: 1_700_000_000,
+      maxGeneratedAt: 1_700_000_120,
+    });
+
+    expect(parsed.invalidCount).toBe(1);
+    expect(parsed.staleCount).toBe(1);
+    expect(parsed.updates.map((update) => update.monitor_id)).toEqual([1, 2]);
+    expect(parsed.updates[0]).toMatchObject({
+      monitor_id: 1,
+      checked_at: 1_700_000_060,
+      check_status: 'up',
+      latency_ms: 42,
+    });
+
+    const db = createFakeD1Database([
+      {
+        match: 'from public_snapshot_fragments',
+        all: (args) => {
+          expect(args).toEqual([MONITOR_RUNTIME_UPDATE_FRAGMENTS_KEY]);
+          return rows;
+        },
+      },
+    ]);
+    await expect(
+      readMonitorRuntimeUpdateFragments(db, { minGeneratedAt: 1_700_000_000 }),
+    ).resolves.toMatchObject({
+      invalidCount: 1,
+      staleCount: 1,
+      updates: [{ monitor_id: 1 }, { monitor_id: 2 }],
+    });
+  });
+
   it('validates monitor fragment keys', () => {
     expect(toPublicMonitorFragmentKey(42)).toBe('monitor:42');
+    expect(parsePublicMonitorFragmentKey('monitor:42')).toBe(42);
+    expect(parsePublicMonitorFragmentKey('monitor:x')).toBeNull();
     expect(() => toPublicMonitorFragmentKey(0)).toThrow('positive integer');
     expect(() => buildStatusMonitorFragmentWrites(statusPayload(), 1, [0])).toThrow(
       'positive integer',

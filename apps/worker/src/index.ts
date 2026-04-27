@@ -69,6 +69,16 @@ function buildInternalRefreshResponse(ok: boolean, refreshed: boolean): Response
   });
 }
 
+function buildInternalJsonResponse(body: unknown, ok: boolean): Response {
+  return new Response(JSON.stringify(body), {
+    status: ok ? 200 : 500,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+    },
+  });
+}
+
 function buildNotFoundJsonResponse(origin: string | null): Response {
   const headers = new Headers({
     'Content-Type': 'application/json; charset=utf-8',
@@ -337,6 +347,43 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
     { refreshed: result.refreshed, ...(result.error ? { error: true } : {}) },
   );
 }
+async function handleInternalRuntimeFragmentsRefresh(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  if (!isInternalServiceRequest(request)) {
+    return buildNotFoundJsonResponse(request.headers.get('Origin'));
+  }
+  if (request.method !== 'POST') {
+    return new Response('Method Not Allowed', { status: 405 });
+  }
+  if (!hasValidInternalAuth(request, env)) {
+    return new Response('Forbidden', { status: 403 });
+  }
+  if (isRequestBodyTooLarge(request)) {
+    return new Response('Payload Too Large', { status: 413 });
+  }
+
+  const { refreshMonitorRuntimeSnapshotFromUpdateFragments } = await import(
+    './internal/runtime-fragments-refresh-core'
+  );
+  const result = await refreshMonitorRuntimeSnapshotFromUpdateFragments({
+    env,
+    now: Math.floor(Date.now() / 1000),
+  });
+  return buildInternalJsonResponse(
+    {
+      ok: result.ok,
+      refreshed: result.refreshed,
+      update_count: result.updateCount,
+      invalid_count: result.invalidCount,
+      stale_count: result.staleCount,
+      ...(result.skip ? { skip: result.skip } : {}),
+    },
+    result.ok,
+  );
+}
+
 async function handleInternalScheduledCheckBatch(
   request: Request,
   env: Env,
@@ -517,6 +564,9 @@ export default {
     }
     if (url.pathname === '/api/v1/internal/scheduled/check-batch') {
       return handleInternalScheduledCheckBatch(request, env, ctx);
+    }
+    if (url.pathname === '/api/v1/internal/refresh/runtime-fragments') {
+      return handleInternalRuntimeFragmentsRefresh(request, env);
     }
 
     const mod = await import('./fetch-handler');
