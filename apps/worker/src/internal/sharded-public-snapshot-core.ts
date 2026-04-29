@@ -145,6 +145,13 @@ const READ_RAW_PUBLIC_SNAPSHOT_GENERATED_AT_SQL = `
   FROM public_snapshots
   WHERE key = ?1
 `;
+const TOUCH_RAW_PUBLIC_SNAPSHOT_UPDATED_AT_SQL = `
+  UPDATE public_snapshots
+  SET updated_at = ?3
+  WHERE key = ?1
+    AND generated_at = ?2
+    AND updated_at < ?3
+`;
 const UPSERT_RAW_PUBLIC_SNAPSHOT_SQL = `
   INSERT INTO public_snapshots (key, generated_at, body_json, updated_at)
   VALUES (?1, ?2, ?3, ?4)
@@ -158,6 +165,7 @@ const UPSERT_RAW_PUBLIC_SNAPSHOT_SQL = `
 type PublicSnapshotPublishKey = 'homepage' | 'homepage:artifact' | 'status';
 const rawPublicSnapshotReadStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 const rawPublicSnapshotGeneratedAtStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
+const rawPublicSnapshotTouchStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 const rawPublicSnapshotUpsertStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 
 function publicSnapshotKeyForKind(kind: ShardedPublicSnapshotKind): 'homepage' | 'status' {
@@ -186,6 +194,20 @@ function rawPublicSnapshotGeneratedAtStatement(
     rawPublicSnapshotGeneratedAtStatementByDb.set(db, statement);
   }
   return statement.bind(key);
+}
+
+function rawPublicSnapshotTouchStatement(
+  db: D1Database,
+  key: PublicSnapshotPublishKey,
+  generatedAt: number,
+  updatedAt: number,
+): D1PreparedStatement {
+  const cached = rawPublicSnapshotTouchStatementByDb.get(db);
+  const statement = cached ?? db.prepare(TOUCH_RAW_PUBLIC_SNAPSHOT_UPDATED_AT_SQL);
+  if (!cached) {
+    rawPublicSnapshotTouchStatementByDb.set(db, statement);
+  }
+  return statement.bind(key, generatedAt, updatedAt);
 }
 
 function rawPublicSnapshotUpsertStatement(
@@ -237,6 +259,21 @@ async function readRawPublicSnapshotGeneratedAt(
   const row = await rawPublicSnapshotGeneratedAtStatement(env.DB, key)
     .first<{ generated_at: number }>();
   return row && Number.isFinite(row.generated_at) ? row.generated_at : null;
+}
+
+async function touchRawPublicSnapshotUpdatedAt(opts: {
+  env: Env;
+  key: PublicSnapshotPublishKey;
+  generatedAt: number;
+  updatedAt: number;
+}): Promise<boolean> {
+  const result = await rawPublicSnapshotTouchStatement(
+    opts.env.DB,
+    opts.key,
+    opts.generatedAt,
+    opts.updatedAt,
+  ).run();
+  return didApplySnapshotWrite(result);
 }
 
 async function publishRawPublicSnapshot(opts: {
@@ -372,13 +409,20 @@ export async function publishHomepageArtifactSnapshotFromPublishedHomepage(opts:
     }
     const artifactGeneratedAt = await readRawPublicSnapshotGeneratedAt(opts.env, 'homepage:artifact');
     if (artifactGeneratedAt !== null && artifactGeneratedAt >= homepageGeneratedAt) {
+      const updatedAt = Math.max(opts.now, Math.floor(Date.now() / 1000));
+      const touched = await touchRawPublicSnapshotUpdatedAt({
+        env: opts.env,
+        key: 'homepage:artifact',
+        generatedAt: artifactGeneratedAt,
+        updatedAt,
+      });
       return {
         ok: true,
         published: false,
         artifactPublished: false,
         generatedAt: artifactGeneratedAt,
         monitorCount: 0,
-        writeCount: 0,
+        writeCount: touched ? 1 : 0,
         skip: 'current_artifact',
       };
     }

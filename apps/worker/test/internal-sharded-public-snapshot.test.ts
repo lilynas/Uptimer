@@ -955,9 +955,10 @@ describe('internal sharded public snapshot continuation route', () => {
     expect(artifact.snapshot).toMatchObject({ generated_at: payload.generated_at });
   });
 
-  it('skips the artifact continuation when the artifact row is already current', async () => {
+  it('touches the artifact row when the artifact is already current', async () => {
     const payload = homepagePayload();
-    const writes: unknown[][] = [];
+    const inserts: unknown[][] = [];
+    const touches: unknown[][] = [];
     const env = {
       DB: createFakeD1Database([
         {
@@ -971,9 +972,16 @@ describe('internal sharded public snapshot continuation route', () => {
           },
         },
         {
+          match: 'update public_snapshots set updated_at',
+          run: (args) => {
+            touches.push(args);
+            return { meta: { changes: 1 } };
+          },
+        },
+        {
           match: 'insert into public_snapshots',
           run: (args) => {
-            writes.push(args);
+            inserts.push(args);
             return { meta: { changes: 1 } };
           },
         },
@@ -1009,11 +1017,13 @@ describe('internal sharded public snapshot continuation route', () => {
       generated_at: payload.generated_at,
       published: false,
       artifact_published: false,
-      write_count: 0,
+      write_count: 1,
       skipped: 'current_artifact',
       continued: false,
     });
-    expect(writes).toHaveLength(0);
+    expect(touches).toHaveLength(1);
+    expect(touches[0]?.slice(0, 2)).toEqual(['homepage:artifact', payload.generated_at]);
+    expect(inserts).toHaveLength(0);
   });
 });
 
