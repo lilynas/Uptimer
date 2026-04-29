@@ -32,7 +32,7 @@ const REFRESH_LOCK_RENEW_INTERVAL_MS = 15_000;
 const REFRESH_LOCK_RENEW_MIN_REMAINING_SECONDS = 20;
 const FUTURE_SNAPSHOT_TOLERANCE_SECONDS = 60;
 const READ_SNAPSHOT_SQL = `
-  SELECT generated_at, body_json
+  SELECT generated_at, updated_at, body_json
   FROM public_snapshots
   WHERE key = ?1
 `;
@@ -668,7 +668,7 @@ function safeJsonParse(text: string): unknown | null {
 async function readSnapshotRow(
   db: D1Database,
   key: string,
-): Promise<{ generated_at: number; body_json: string } | null> {
+): Promise<{ generated_at: number; updated_at?: number | null; body_json: string } | null> {
   try {
     const cached = readSnapshotStatementByDb.get(db);
     const statement = cached ?? db.prepare(READ_SNAPSHOT_SQL);
@@ -678,7 +678,7 @@ async function readSnapshotRow(
 
     return await statement
       .bind(key)
-      .first<{ generated_at: number; body_json: string }>();
+      .first<{ generated_at: number; updated_at?: number | null; body_json: string }>();
   } catch (err) {
     console.warn('homepage snapshot: read failed', err);
     return null;
@@ -695,14 +695,15 @@ async function readHomepageArtifactSnapshotRow(db: D1Database) {
 
 async function readSnapshotRowsByPriority(
   db: D1Database,
-): Promise<Array<{ generated_at: number; body_json: string }>> {
+): Promise<Array<{ generated_at: number; updated_at?: number | null; body_json: string }>> {
   const [artifactRow, homepageRow] = await Promise.all([
     readHomepageArtifactSnapshotRow(db),
     readHomepageSnapshotRow(db),
   ]);
 
   return [artifactRow, homepageRow].filter(
-    (row): row is { generated_at: number; body_json: string } => row !== null,
+    (row): row is { generated_at: number; updated_at?: number | null; body_json: string } =>
+      row !== null,
   );
 }
 
@@ -753,11 +754,12 @@ function normalizeHomepageArtifactBodyJson(bodyJson: string): string | null {
 }
 
 function readSnapshotValueFromRows<T>(opts: {
-  rows: ReadonlyArray<{ generated_at: number; body_json: string }>;
+  rows: ReadonlyArray<{ generated_at: number; updated_at?: number | null; body_json: string }>;
   now: number;
   maxAgeSeconds: number;
   warning: string;
   normalize: (bodyJson: string) => T | null;
+  ageFromUpdatedAt?: boolean;
 }): { value: T; age: number } | null {
   let freshest: { value: T; age: number } | null = null;
 
@@ -765,7 +767,10 @@ function readSnapshotValueFromRows<T>(opts: {
     if (row.generated_at > opts.now + FUTURE_SNAPSHOT_TOLERANCE_SECONDS) {
       continue;
     }
-    const age = Math.max(0, opts.now - row.generated_at);
+    const ageBase = opts.ageFromUpdatedAt && typeof row.updated_at === 'number'
+      ? row.updated_at
+      : row.generated_at;
+    const age = Math.max(0, opts.now - ageBase);
     if (age > opts.maxAgeSeconds) {
       continue;
     }
@@ -908,6 +913,7 @@ export async function readHomepageSnapshotArtifactJson(
     maxAgeSeconds: MAX_AGE_SECONDS,
     warning: 'homepage snapshot: invalid render payload',
     normalize: normalizeHomepageArtifactBodyJson,
+    ageFromUpdatedAt: true,
   });
   return snapshot ? { bodyJson: snapshot.value, age: snapshot.age } : null;
 }
@@ -929,6 +935,7 @@ export async function readStaleHomepageSnapshotArtifact(
       }
       return readStoredHomepageSnapshotRender(parsed);
     },
+    ageFromUpdatedAt: true,
   });
   return snapshot ? { data: snapshot.value, age: snapshot.age } : null;
 }
@@ -944,6 +951,7 @@ export async function readStaleHomepageSnapshotArtifactJson(
     maxAgeSeconds: MAX_STALE_SECONDS,
     warning: 'homepage snapshot: invalid stale render payload',
     normalize: normalizeHomepageArtifactBodyJson,
+    ageFromUpdatedAt: true,
   });
   return snapshot ? { bodyJson: snapshot.value, age: snapshot.age } : null;
 }
