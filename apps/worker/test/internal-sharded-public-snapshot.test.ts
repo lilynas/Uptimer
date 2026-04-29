@@ -758,6 +758,12 @@ describe('internal sharded public snapshot continuation route', () => {
     const env = {
       DB: createFakeD1Database([
         {
+          match: (sql) =>
+            sql.includes('select generated_at from public_snapshots') &&
+            !sql.includes('body_json'),
+          first: (args) => (args[0] === 'homepage' ? { generated_at: payload.generated_at } : null),
+        },
+        {
           match: (sql) => sql.includes('from public_snapshots') && sql.includes('body_json'),
           first: (args) => {
             expect(args).toEqual(['homepage']);
@@ -813,6 +819,67 @@ describe('internal sharded public snapshot continuation route', () => {
     const artifact = JSON.parse(writes[0]![2] as string) as { preload_html?: string; snapshot?: unknown };
     expect(artifact.preload_html).toContain('uptimer-preload');
     expect(artifact.snapshot).toMatchObject({ generated_at: payload.generated_at });
+  });
+
+  it('skips the artifact continuation when the artifact row is already current', async () => {
+    const payload = homepagePayload();
+    const writes: unknown[][] = [];
+    const env = {
+      DB: createFakeD1Database([
+        {
+          match: (sql) =>
+            sql.includes('select generated_at from public_snapshots') &&
+            !sql.includes('body_json'),
+          first: (args) => {
+            if (args[0] === 'homepage') return { generated_at: payload.generated_at };
+            if (args[0] === 'homepage:artifact') return { generated_at: payload.generated_at };
+            return null;
+          },
+        },
+        {
+          match: 'insert into public_snapshots',
+          run: (args) => {
+            writes.push(args);
+            return { meta: { changes: 1 } };
+          },
+        },
+      ]),
+      ADMIN_TOKEN: 'test-admin-token',
+      UPTIMER_SCHEDULED_SHARDED_CONTINUATION: '1',
+      UPTIMER_PUBLIC_SHARDED_SNAPSHOT_PUBLISH: '1',
+      UPTIMER_SCHEDULED_SHARDED_PUBLISH: '1',
+    } as unknown as Env;
+
+    const res = await worker.fetch(
+      new Request('http://internal/api/v1/internal/continue/sharded-public-snapshot', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer test-admin-token',
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+        body: JSON.stringify({
+          step: 'artifact',
+          kind: 'homepage',
+          generated_at: payload.generated_at,
+        }),
+      }),
+      env,
+      { waitUntil: vi.fn() } as unknown as ExecutionContext,
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      step: 'artifact',
+      kind: 'homepage',
+      generated_at: payload.generated_at,
+      published: false,
+      artifact_published: false,
+      write_count: 0,
+      skipped: 'current_artifact',
+      continued: false,
+    });
+    expect(writes).toHaveLength(0);
   });
 });
 

@@ -81,7 +81,7 @@ export type ShardedHomepageArtifactPublishResult = {
   generatedAt?: number;
   monitorCount: number;
   writeCount: number;
-  skip?: 'missing_homepage' | 'stale_homepage' | 'invalid_payload';
+  skip?: 'missing_homepage' | 'stale_homepage' | 'current_artifact' | 'invalid_payload';
   error?: boolean;
   errorName?: string;
   errorMessage?: string;
@@ -117,6 +117,11 @@ const READ_RAW_PUBLIC_SNAPSHOT_SQL = `
   FROM public_snapshots
   WHERE key = ?1
 `;
+const READ_RAW_PUBLIC_SNAPSHOT_GENERATED_AT_SQL = `
+  SELECT generated_at
+  FROM public_snapshots
+  WHERE key = ?1
+`;
 const UPSERT_RAW_PUBLIC_SNAPSHOT_SQL = `
   INSERT INTO public_snapshots (key, generated_at, body_json, updated_at)
   VALUES (?1, ?2, ?3, ?4)
@@ -129,6 +134,7 @@ const UPSERT_RAW_PUBLIC_SNAPSHOT_SQL = `
 `;
 type PublicSnapshotPublishKey = 'homepage' | 'homepage:artifact' | 'status';
 const rawPublicSnapshotReadStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
+const rawPublicSnapshotGeneratedAtStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 const rawPublicSnapshotUpsertStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 
 function publicSnapshotKeyForKind(kind: ShardedPublicSnapshotKind): 'homepage' | 'status' {
@@ -143,6 +149,18 @@ function rawPublicSnapshotReadStatement(
   const statement = cached ?? db.prepare(READ_RAW_PUBLIC_SNAPSHOT_SQL);
   if (!cached) {
     rawPublicSnapshotReadStatementByDb.set(db, statement);
+  }
+  return statement.bind(key);
+}
+
+function rawPublicSnapshotGeneratedAtStatement(
+  db: D1Database,
+  key: PublicSnapshotPublishKey,
+): D1PreparedStatement {
+  const cached = rawPublicSnapshotGeneratedAtStatementByDb.get(db);
+  const statement = cached ?? db.prepare(READ_RAW_PUBLIC_SNAPSHOT_GENERATED_AT_SQL);
+  if (!cached) {
+    rawPublicSnapshotGeneratedAtStatementByDb.set(db, statement);
   }
   return statement.bind(key);
 }
@@ -187,6 +205,15 @@ async function readRawPublicSnapshotRow(
     return null;
   }
   return row;
+}
+
+async function readRawPublicSnapshotGeneratedAt(
+  env: Env,
+  key: PublicSnapshotPublishKey,
+): Promise<number | null> {
+  const row = await rawPublicSnapshotGeneratedAtStatement(env.DB, key)
+    .first<{ generated_at: number }>();
+  return row && Number.isFinite(row.generated_at) ? row.generated_at : null;
 }
 
 async function publishRawPublicSnapshot(opts: {
@@ -269,8 +296,8 @@ export async function publishHomepageArtifactSnapshotFromPublishedHomepage(opts:
   generatedAt?: number;
 }): Promise<ShardedHomepageArtifactPublishResult> {
   try {
-    const row = await readRawPublicSnapshotRow(opts.env, 'homepage');
-    if (!row) {
+    const homepageGeneratedAt = await readRawPublicSnapshotGeneratedAt(opts.env, 'homepage');
+    if (homepageGeneratedAt === null) {
       return {
         ok: true,
         published: false,
@@ -280,15 +307,39 @@ export async function publishHomepageArtifactSnapshotFromPublishedHomepage(opts:
         skip: 'missing_homepage',
       };
     }
-    if (opts.generatedAt !== undefined && row.generated_at < opts.generatedAt) {
+    if (opts.generatedAt !== undefined && homepageGeneratedAt < opts.generatedAt) {
       return {
         ok: true,
         published: false,
         artifactPublished: false,
-        generatedAt: row.generated_at,
+        generatedAt: homepageGeneratedAt,
         monitorCount: 0,
         writeCount: 0,
         skip: 'stale_homepage',
+      };
+    }
+    const artifactGeneratedAt = await readRawPublicSnapshotGeneratedAt(opts.env, 'homepage:artifact');
+    if (artifactGeneratedAt !== null && artifactGeneratedAt >= homepageGeneratedAt) {
+      return {
+        ok: true,
+        published: false,
+        artifactPublished: false,
+        generatedAt: artifactGeneratedAt,
+        monitorCount: 0,
+        writeCount: 0,
+        skip: 'current_artifact',
+      };
+    }
+
+    const row = await readRawPublicSnapshotRow(opts.env, 'homepage');
+    if (!row) {
+      return {
+        ok: true,
+        published: false,
+        artifactPublished: false,
+        monitorCount: 0,
+        writeCount: 0,
+        skip: 'missing_homepage',
       };
     }
     return await publishRawHomepageArtifactSnapshot({
